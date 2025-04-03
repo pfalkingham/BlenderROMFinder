@@ -78,7 +78,7 @@ class COLLISION_OT_calculate(Operator):
         # Create translation range lists - these are RELATIVE to the current location
         trans_x_range = np.arange(props.trans_x_min, props.trans_x_max + props.trans_x_inc, props.trans_x_inc)
         trans_y_range = np.arange(props.trans_y_min, props.trans_y_max + props.trans_y_inc, props.trans_y_inc)
-        trans_z_range = np.arange(props.trans_z_min, props.trans_z_max + props.trans_z_inc, props.trans_z_inc)
+        trans_z_range = np.arange(props.trans_x_min, props.trans_x_max + props.trans_x_inc, props.trans_x_inc)
         
         # Make sure we have at least one value in each range
         if len(rot_x_range) == 0: rot_x_range = [props.rot_x_min]
@@ -192,10 +192,10 @@ class COLLISION_OT_calculate(Operator):
             self.store_collision_data_as_attributes(context, dist_obj, collision_data, props.attribute_name_prefix)
             self.report({'INFO'}, f"Stored {len(collision_data)} collision points as attributes")
             
-            # If visualization is enabled, create a visualization
-            if props.visualize_collisions:
-                self.visualize_collision_data(context, dist_obj, collision_data, props.attribute_name_prefix)
-                self.report({'INFO'}, "Created collision visualization")
+            # Always create visualization, but control visibility with the checkbox
+            self.visualize_collision_data(context, dist_obj, collision_data, props.attribute_name_prefix)
+            show_status = "shown" if props.visualize_collisions else "created but hidden"
+            self.report({'INFO'}, f"Animation layer of non-collision poses {show_status}")
         
         return {'FINISHED'}
     
@@ -245,8 +245,8 @@ class COLLISION_OT_calculate(Operator):
         return collision_data
     
     def visualize_collision_data(self, context, obj, collision_data, prefix):
-        """Create keyframes for positions without collisions"""
-        self.report({'INFO'}, f"Creating keyframes for non-collision poses")
+        """Create an NLA strip for positions without collisions"""
+        self.report({'INFO'}, f"Creating animation layer for non-collision poses")
         
         # Get the rotational object
         rot_obj = context.scene.collision_props.rotational_object if context.scene.collision_props.rotational_object else obj
@@ -255,16 +255,23 @@ class COLLISION_OT_calculate(Operator):
         orig_rot_loc = rot_obj.location.copy()
         orig_rot_rotation = rot_obj.rotation_euler.copy()
         
-        # Create a new action if needed
+        # Make sure we have animation data
         if not rot_obj.animation_data:
             rot_obj.animation_data_create()
         
-        if not rot_obj.animation_data.action:
-            rot_obj.animation_data.action = bpy.data.actions.new(name=f"{rot_obj.name}_collision_range")
+        # Create a new action for our non-collision poses
+        action_name = f"{rot_obj.name}_ROM_Poses"
+        new_action = bpy.data.actions.new(name=action_name)
         
-        # Clear any existing keyframes in this action
-        for fcurve in rot_obj.animation_data.action.fcurves:
-            rot_obj.animation_data.action.fcurves.remove(fcurve)
+        # Temporarily set this as the active action
+        original_action = None
+        if rot_obj.animation_data.action:
+            original_action = rot_obj.animation_data.action
+        rot_obj.animation_data.action = new_action
+        
+        # First, keyframe the original pose at frame 0
+        rot_obj.keyframe_insert(data_path="location", frame=0)
+        rot_obj.keyframe_insert(data_path="rotation_euler", frame=0)
         
         # Get all poses from our calculation
         props = context.scene.collision_props
@@ -295,6 +302,7 @@ class COLLISION_OT_calculate(Operator):
             collision_poses[key] = True
         
         # Create keyframes for non-collision poses
+        # Start from frame 1 since frame 0 is our original pose
         frame = 1
         frame_data = []
         
@@ -347,11 +355,89 @@ class COLLISION_OT_calculate(Operator):
             rot_obj.keyframe_insert(data_path="location", frame=data['frame'])
             rot_obj.keyframe_insert(data_path="rotation_euler", frame=data['frame'])
         
+        # Add the action as an NLA strip
+        if new_action.users > 0:  # Only add if we created keyframes
+            # Clear the active action first
+            rot_obj.animation_data.action = None
+            
+            # Check if a "ROM Safe Poses" track already exists, if yes, remove it
+            existing_track = rot_obj.animation_data.nla_tracks.get("ROM Safe Poses")
+            if existing_track:
+                rot_obj.animation_data.nla_tracks.remove(existing_track)
+                
+            # Create a new track
+            track = rot_obj.animation_data.nla_tracks.new()
+            track.name = "ROM Safe Poses"
+            strip = track.strips.new(name="ROM Safe Poses", start=0, action=new_action)
+            
+            # Configure the strip
+            strip.blend_type = 'REPLACE'
+            strip.use_auto_blend = False
+            strip.extrapolation = 'HOLD'  # Hold the last frame's pose
+            
+            # Restore or create the original animation track if there was one
+            if original_action:
+                # Check if an "Original Animation" track already exists
+                orig_track = rot_obj.animation_data.nla_tracks.get("Original Animation")
+                if not orig_track:
+                    # Create a new track for the original animation
+                    orig_track = rot_obj.animation_data.nla_tracks.new()
+                    orig_track.name = "Original Animation"
+                    # Add the original action as a strip
+                    orig_strip = orig_track.strips.new(name="Original Animation", start=0, action=original_action)
+                    orig_strip.blend_type = 'REPLACE'
+                    orig_strip.extrapolation = 'HOLD'
+                
+                # Adjust which track is active based on checkbox
+                if props.visualize_collisions:
+                    # Show ROM Safe Poses, hide Original Animation
+                    track.mute = False
+                    strip.influence = 1.0
+                    orig_track.mute = True
+                    
+                    # Move ROM track to the top to ensure it's applied
+                    while rot_obj.animation_data.nla_tracks.find(track.name) > 0:
+                        bpy.ops.anim.nla_track_move_up({"object": rot_obj}, track_index=rot_obj.animation_data.nla_tracks.find(track.name))
+                else:
+                    # Hide ROM Safe Poses, show Original Animation
+                    track.mute = True
+                    strip.influence = 0.0
+                    orig_track.mute = False
+                    
+                    # Move Original track to the top to ensure it's applied
+                    while rot_obj.animation_data.nla_tracks.find(orig_track.name) > 0:
+                        bpy.ops.anim.nla_track_move_up({"object": rot_obj}, track_index=rot_obj.animation_data.nla_tracks.find(orig_track.name))
+            else:
+                # If there was no original animation, just set ROM strip visibility
+                if props.visualize_collisions:
+                    track.mute = False
+                    strip.influence = 1.0
+                else:
+                    track.mute = True
+                    strip.influence = 0.0
+            
+            # Make sure the effect of the active strip is applied
+            if props.visualize_collisions:
+                # Set the current frame to 0 to see the original pose initially
+                context.scene.frame_set(0)
+                # Enable NLA evaluation
+                rot_obj.animation_data.use_nla = True
+                # Force an update
+                rot_obj.update_tag()
+                context.view_layer.update()
+            
+            self.report({'INFO'}, f"Created NLA strip with {len(frame_data)} non-collision poses")
+        else:
+            # If we didn't create any keyframes (all poses have collisions)
+            self.report({'WARNING'}, "No collision-free poses found to create animation")
+            
+            # Restore original action if there was one
+            if original_action:
+                rot_obj.animation_data.action = original_action
+        
         # Reset object to original position
         rot_obj.location = orig_rot_loc
         rot_obj.rotation_euler = orig_rot_rotation
-        
-        self.report({'INFO'}, f"Created {len(frame_data)} keyframes for non-collision poses")
     
     def make_collection_visible(self, layer_collection, target_name):
         """Recursively make a collection visible"""

@@ -3,7 +3,7 @@ from bpy.types import Panel
 
 class COLLISION_PT_panel(Panel):
     """Creates a panel in the 3D View sidebar"""
-    bl_label = "Collision Range Finder"
+    bl_label = "Range of Motion Finder"
     bl_idname = "COLLISION_PT_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -95,6 +95,11 @@ class COLLISION_PT_panel(Panel):
             row.prop(props, "attribute_name_prefix")
             row = box.row()
             row.prop(props, "visualize_collisions")
+            
+            # Add info text about NLA editor if visualization is enabled
+            if props.visualize_collisions:
+                info_row = box.row()
+                info_row.label(text="Check NLA Editor to see animations", icon='INFO')
         
         # Calculate button
         layout.operator("collision.calculate", icon='PLAY')

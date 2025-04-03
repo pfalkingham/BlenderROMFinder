@@ -196,8 +196,8 @@ class CollisionProperties(PropertyGroup):
     )
     
     visualize_collisions: BoolProperty(
-        name="Visualize Collisions [keyframe non-colliding poses]",
-        description="Create a vertex group with collision points",
+        name="Create & Show Animation Layer",
+        description="Create an NLA animation layer with non-colliding poses and make it visible",
         default=True
     )
     
