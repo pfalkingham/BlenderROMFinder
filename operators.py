@@ -14,15 +14,24 @@ class COLLISION_OT_calculate(Operator):
     bl_label = "Calculate Collisions"
     bl_options = {'REGISTER', 'UNDO'}
     
-    def check_collision(self, obj1, obj2):
-        """Use BVH trees to check for collision between two objects"""
-        # Create BVH trees directly from the objects
-        bvh1 = self.create_bvh_tree_from_object(obj1)
-        bvh2 = self.create_bvh_tree_from_object(obj2)
+    def check_collision(self, prox_obj, dist_obj, prox_bvh=None):
+        """Use BVH trees to check for collision between two objects
+        
+        Args:
+            prox_obj: The proximal (fixed) object
+            dist_obj: The distal (moving) object
+            prox_bvh: Optional pre-calculated BVH tree for the proximal object
+        """
+        # Create BVH tree for proximal object if not provided
+        if prox_bvh is None:
+            prox_bvh = self.create_bvh_tree_from_object(prox_obj)
+            
+        # Create BVH tree for distal object
+        dist_bvh = self.create_bvh_tree_from_object(dist_obj)
         
         # Check for overlap between the two BVH trees
         # The overlap method returns a list of overlapping pairs
-        overlap_pairs = bvh1.overlap(bvh2)
+        overlap_pairs = prox_bvh.overlap(dist_bvh)
         
         # If any overlap is found, return True
         return len(overlap_pairs) > 0
@@ -95,6 +104,11 @@ class COLLISION_OT_calculate(Operator):
         # Use rot_obj's location as the pivot point
         pivot = rot_obj.location.copy()
         
+        # Pre-calculate the BVH tree for the proximal object (which doesn't move)
+        # This is a major optimization as we only need to calculate it once
+        self.report({'INFO'}, "Pre-calculating BVH tree for proximal object...")
+        prox_bvh = self.create_bvh_tree_from_object(prox_obj)
+        
         # Start calculation
         for rot_x in rot_x_range:
             for rot_y in rot_y_range:
@@ -129,8 +143,8 @@ class COLLISION_OT_calculate(Operator):
                                 # Update the scene
                                 context.view_layer.update()
                                 
-                                # Check for collision
-                                collision = self.check_collision(prox_obj, dist_obj)
+                                # Check for collision using the pre-calculated proximal BVH tree
+                                collision = self.check_collision(prox_obj, dist_obj, prox_bvh)
                                 
                                 # Record data - store the absolute world rotations for clarity
                                 absolute_rot_x = math.degrees(rot_obj.rotation_euler.x)
