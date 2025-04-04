@@ -259,14 +259,22 @@ class COLLISION_OT_calculate(Operator):
         if not rot_obj.animation_data:
             rot_obj.animation_data_create()
         
-        # Create a new action for our non-collision poses
-        action_name = f"{rot_obj.name}_ROM_Poses"
-        new_action = bpy.data.actions.new(name=action_name)
+        # Store original action if there is one
+        original_action = rot_obj.animation_data.action
         
-        # Temporarily set this as the active action
-        original_action = None
-        if rot_obj.animation_data.action:
-            original_action = rot_obj.animation_data.action
+        # Create a new action with a consistent name
+        action_name = "ROM_Safe_Poses"
+        
+        # Check if the action already exists and use it if it does
+        if action_name in bpy.data.actions:
+            new_action = bpy.data.actions[action_name]
+            # Clear existing keyframes
+            for fc in new_action.fcurves:
+                new_action.fcurves.remove(fc)
+        else:
+            new_action = bpy.data.actions.new(name=action_name)
+        
+        # Set this as the active action while we create keyframes
         rot_obj.animation_data.action = new_action
         
         # First, keyframe the original pose at frame 0
@@ -357,18 +365,17 @@ class COLLISION_OT_calculate(Operator):
         
         # Add the action as an NLA strip
         if new_action.users > 0:  # Only add if we created keyframes
-            # Clear the active action first
-            rot_obj.animation_data.action = None
-            
             # Check if a "ROM Safe Poses" track already exists, if yes, remove it
-            existing_track = rot_obj.animation_data.nla_tracks.get("ROM Safe Poses")
+            existing_track = rot_obj.animation_data.nla_tracks.get("ROM_Safe_Poses")
             if existing_track:
                 rot_obj.animation_data.nla_tracks.remove(existing_track)
                 
-            # Create a new track
+            # Create a new track with the same name as the action
             track = rot_obj.animation_data.nla_tracks.new()
-            track.name = "ROM Safe Poses"
-            strip = track.strips.new(name="ROM Safe Poses", start=0, action=new_action)
+            track.name = "ROM_Safe_Poses"
+            
+            # Create strip with the same name
+            strip = track.strips.new(name="ROM_Safe_Poses", start=0, action=new_action)
             
             # Configure the strip
             strip.blend_type = 'REPLACE'
@@ -378,13 +385,13 @@ class COLLISION_OT_calculate(Operator):
             # Restore or create the original animation track if there was one
             if original_action:
                 # Check if an "Original Animation" track already exists
-                orig_track = rot_obj.animation_data.nla_tracks.get("Original Animation")
+                orig_track = rot_obj.animation_data.nla_tracks.get("Original_Animation")
                 if not orig_track:
                     # Create a new track for the original animation
                     orig_track = rot_obj.animation_data.nla_tracks.new()
-                    orig_track.name = "Original Animation"
+                    orig_track.name = "Original_Animation"
                     # Add the original action as a strip
-                    orig_strip = orig_track.strips.new(name="Original Animation", start=0, action=original_action)
+                    orig_strip = orig_track.strips.new(name="Original_Animation", start=0, action=original_action)
                     orig_strip.blend_type = 'REPLACE'
                     orig_strip.extrapolation = 'HOLD'
                 
@@ -395,6 +402,9 @@ class COLLISION_OT_calculate(Operator):
                     strip.influence = 1.0
                     orig_track.mute = True
                     
+                    # Set as active action (visible in animation panel)
+                    rot_obj.animation_data.action = new_action
+                    
                     # Move ROM track to the top to ensure it's applied
                     while rot_obj.animation_data.nla_tracks.find(track.name) > 0:
                         bpy.ops.anim.nla_track_move_up({"object": rot_obj}, track_index=rot_obj.animation_data.nla_tracks.find(track.name))
@@ -404,17 +414,24 @@ class COLLISION_OT_calculate(Operator):
                     strip.influence = 0.0
                     orig_track.mute = False
                     
+                    # Set original as active action
+                    rot_obj.animation_data.action = original_action
+                    
                     # Move Original track to the top to ensure it's applied
                     while rot_obj.animation_data.nla_tracks.find(orig_track.name) > 0:
                         bpy.ops.anim.nla_track_move_up({"object": rot_obj}, track_index=rot_obj.animation_data.nla_tracks.find(orig_track.name))
             else:
-                # If there was no original animation, just set ROM strip visibility
+                # If there was no original animation
                 if props.visualize_collisions:
+                    # Show ROM animation
                     track.mute = False
                     strip.influence = 1.0
+                    rot_obj.animation_data.action = new_action
                 else:
+                    # Hide ROM animation
                     track.mute = True
                     strip.influence = 0.0
+                    rot_obj.animation_data.action = None
             
             # Make sure the effect of the active strip is applied
             if props.visualize_collisions:
@@ -432,8 +449,7 @@ class COLLISION_OT_calculate(Operator):
             self.report({'WARNING'}, "No collision-free poses found to create animation")
             
             # Restore original action if there was one
-            if original_action:
-                rot_obj.animation_data.action = original_action
+            rot_obj.animation_data.action = original_action
         
         # Reset object to original position
         rot_obj.location = orig_rot_loc
