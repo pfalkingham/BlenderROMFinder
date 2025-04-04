@@ -13,6 +13,21 @@ class COLLISION_PT_panel(Panel):
         layout = self.layout
         props = context.scene.collision_props
         
+        # Check if calculation is in progress
+        if props.is_calculating:
+            # Show progress information
+            box = layout.box()
+            box.label(text="Calculating collisions...", icon='INFO')
+            
+            # Progress bar
+            progress_row = box.row()
+            progress_row.prop(props, "calculation_progress", text="Progress")
+            
+            # Cancel button
+            cancel_row = box.row()
+            cancel_row.operator("collision.cancel", icon='X')
+            return  # Don't show the rest of the UI while calculating
+        
         # Object selection
         box = layout.box()
         box.label(text="Objects:")

@@ -176,6 +176,22 @@ class CollisionProperties(PropertyGroup):
         max=10.0
     )
     
+    # Progress tracking
+    is_calculating: BoolProperty(
+        name="Is Calculating",
+        description="Whether a calculation is currently in progress",
+        default=False
+    )
+    
+    calculation_progress: FloatProperty(
+        name="Calculation Progress",
+        description="Progress of the current calculation (0-100%)",
+        default=0.0,
+        min=0.0,
+        max=100.0,
+        subtype='PERCENTAGE'
+    )
+    
     export_to_csv: BoolProperty(
         name="Export to CSV",
         description="Enable to export collision data to a CSV file",

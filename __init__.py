@@ -15,13 +15,14 @@ from bpy.props import PointerProperty
 
 # Import components from modules
 from .properties import CollisionProperties
-from .operators import COLLISION_OT_calculate
+from .operators import COLLISION_OT_calculate, COLLISION_OT_cancel
 from .ui import COLLISION_PT_panel
 
 # Registration
 classes = (
     CollisionProperties,
     COLLISION_OT_calculate,
+    COLLISION_OT_cancel,
     COLLISION_PT_panel,
 )
 
