@@ -7,6 +7,7 @@ import csv
 import os
 import json
 import time
+from mathutils import Matrix
 from bpy.types import Operator
 
 class COLLISION_OT_cancel(Operator):
@@ -36,7 +37,6 @@ class COLLISION_OT_calculate(Operator):
     _timer = None
     _is_initialized = False
     _is_finished = False
-    _batch_size = 100  # Number of iterations to process per timer tick
     
     # Calculation state tracking
     _rot_x_range = []
@@ -59,20 +59,49 @@ class COLLISION_OT_calculate(Operator):
     _cur_ty_idx = 0
     _cur_tz_idx = 0
     
-    def check_collision(self, prox_obj, dist_obj, prox_bvh=None):
+    # Additional optimization variables
+    _prox_mesh = None
+    _dist_meshes = {}  # Cache for distal object transformed meshes
+    _last_transform_key = None  # Track the last transformation to avoid redundant BVH creation
+    
+    def check_collision(self, prox_obj, dist_obj, prox_bvh=None, transform_matrix=None):
         """Use BVH trees to check for collision between two objects
         
         Args:
             prox_obj: The proximal (fixed) object
             dist_obj: The distal (moving) object
             prox_bvh: Optional pre-calculated BVH tree for the proximal object
+            transform_matrix: The transformation matrix for the distal object
         """
+        props = bpy.context.scene.collision_props
+        
         # Create BVH tree for proximal object if not provided
         if prox_bvh is None:
             prox_bvh = self.create_bvh_tree_from_object(prox_obj)
+        
+        # Create a transform key for caching
+        transform_key = None
+        if transform_matrix is not None:
+            # Create a hashable key from the matrix values
+            transform_key = tuple(tuple(row) for row in transform_matrix)
+        
+        # Try to use cached BVH tree for distal object if available
+        if transform_key and transform_key in self._dist_meshes:
+            dist_bvh = self._dist_meshes[transform_key]
+        else:
+            # Create a new BVH tree for distal object
+            if transform_matrix:
+                dist_bvh = self.create_bvh_tree_with_transform(dist_obj, transform_matrix)
+            else:
+                dist_bvh = self.create_bvh_tree_from_object(dist_obj)
             
-        # Create BVH tree for distal object
-        dist_bvh = self.create_bvh_tree_from_object(dist_obj)
+            # Cache this BVH tree
+            if transform_key:
+                # Limit cache size by removing oldest entries if too many
+                if len(self._dist_meshes) > 50:  # Only keep the 50 most recent transformations
+                    oldest_key = next(iter(self._dist_meshes))
+                    del self._dist_meshes[oldest_key]
+                self._dist_meshes[transform_key] = dist_bvh
         
         # Check for overlap between the two BVH trees
         # The overlap method returns a list of overlapping pairs
@@ -87,6 +116,25 @@ class COLLISION_OT_calculate(Operator):
         mesh = obj.to_mesh()
         bm.from_mesh(mesh)
         bm.transform(obj.matrix_world)
+        bvh = mathutils.bvhtree.BVHTree.FromBMesh(bm)
+        
+        # Clean up
+        bm.free()
+        obj.to_mesh_clear()
+        
+        return bvh
+    
+    def create_bvh_tree_with_transform(self, obj, transform_matrix):
+        """Create a BVH tree with a specific transformation matrix"""
+        bm = bmesh.new()
+        mesh = obj.to_mesh()
+        bm.from_mesh(mesh)
+        
+        # Apply the transform directly to the BMesh vertices
+        # This avoids the need for a scene update
+        bm.transform(transform_matrix)
+        
+        # Create BVH tree
         bvh = mathutils.bvhtree.BVHTree.FromBMesh(bm)
         
         # Clean up
@@ -152,6 +200,9 @@ class COLLISION_OT_calculate(Operator):
         self.report({'INFO'}, "Pre-calculating BVH tree for proximal object...")
         self._prox_bvh = self.create_bvh_tree_from_object(props.proximal_object)
         
+        # Reset the distal mesh cache
+        self._dist_meshes = {}
+        
         # Initialize index trackers for iteration
         self._cur_x_idx = 0
         self._cur_y_idx = 0
@@ -177,15 +228,23 @@ class COLLISION_OT_calculate(Operator):
         if not self._is_initialized or self._is_finished:
             return False
         
+        # Use the configurable batch size
+        batch_size = props.batch_size
+        
         # Get the objects
         prox_obj = props.proximal_object
         dist_obj = props.distal_object
         rot_obj = props.rotational_object if props.rotational_object else dist_obj
         
+        # Store original transformations for restoration at end if using scene updates
+        orig_loc = rot_obj.location.copy()
+        orig_rot = rot_obj.rotation_euler.copy()
+        
         # Process a batch of iterations
         batch_counter = 0
+        last_view_update = 0
         
-        while batch_counter < self._batch_size:
+        while batch_counter < batch_size:
             # Check if we need to stop
             if not props.is_calculating:
                 self.report({'INFO'}, "Calculation cancelled by user")
@@ -204,35 +263,70 @@ class COLLISION_OT_calculate(Operator):
             trans_y = self._trans_y_range[self._cur_ty_idx]
             trans_z = self._trans_z_range[self._cur_tz_idx]
             
-            # Reset rotation object to original position
-            rot_obj.location = self._orig_rot_loc.copy()
-            rot_obj.rotation_euler = self._orig_rot_rotation.copy()
+            # Method 1: Update the scene (slower but visible)
+            if not props.skip_scene_updates:
+                # Reset rotation object to original position
+                rot_obj.location = self._orig_rot_loc.copy()
+                rot_obj.rotation_euler = self._orig_rot_rotation.copy()
+                
+                # Apply rotation (converting degrees to radians)
+                # The additional rotation is applied to the current rotation
+                rot_euler = mathutils.Euler(
+                    (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
+                    'XYZ'
+                )
+                
+                # Apply rotation to the rotation object
+                rot_obj.rotation_euler.rotate(rot_euler)
+                
+                # Apply translation to the rotation object
+                rot_obj.location.x += trans_x
+                rot_obj.location.y += trans_y
+                rot_obj.location.z += trans_z
+                
+                # Update the scene (expensive operation)
+                context.view_layer.update()
+                
+                # Check for collision using the pre-calculated proximal BVH tree
+                collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
             
-            # Apply rotation (converting degrees to radians)
-            # The additional rotation is applied to the current rotation
-            rot_euler = mathutils.Euler(
-                (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
-                'XYZ'
-            )
+            # Method 2: Calculate in memory without scene updates (much faster)
+            else:
+                # Calculate the rotation matrix from Euler angles
+                rot_mat = mathutils.Euler(
+                    (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
+                    'XYZ'
+                ).to_matrix().to_4x4()
+                
+                # Create translation matrix
+                trans_mat = mathutils.Matrix.Translation((trans_x, trans_y, trans_z))
+                
+                # Get the original object matrices
+                orig_rot_mat = self._orig_rot_rotation.to_matrix().to_4x4()
+                orig_loc_mat = mathutils.Matrix.Translation(self._orig_rot_loc)
+                
+                # Combine transformations
+                # Order matters: original position, then rotation, then translation
+                transform_matrix = trans_mat @ rot_mat @ orig_rot_mat @ orig_loc_mat
+                
+                # Check for collision using matrices directly without updating the scene
+                collision = self.check_collision(
+                    prox_obj, 
+                    dist_obj, 
+                    self._prox_bvh,
+                    transform_matrix
+                )
             
-            # Apply rotation to the rotation object
-            rot_obj.rotation_euler.rotate(rot_euler)
+            # Record data
+            # Calculate absolute rotations for clarity
+            absolute_rot_x = self._orig_rot_rotation.x + math.radians(rot_x)
+            absolute_rot_y = self._orig_rot_rotation.y + math.radians(rot_y)
+            absolute_rot_z = self._orig_rot_rotation.z + math.radians(rot_z)
             
-            # Apply translation to the rotation object
-            rot_obj.location.x += trans_x
-            rot_obj.location.y += trans_y
-            rot_obj.location.z += trans_z
-            
-            # Update the scene
-            context.view_layer.update()
-            
-            # Check for collision using the pre-calculated proximal BVH tree
-            collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
-            
-            # Record data - store the absolute world rotations for clarity
-            absolute_rot_x = math.degrees(rot_obj.rotation_euler.x)
-            absolute_rot_y = math.degrees(rot_obj.rotation_euler.y)
-            absolute_rot_z = math.degrees(rot_obj.rotation_euler.z)
+            # Convert back to degrees for storage
+            absolute_rot_x = math.degrees(absolute_rot_x)
+            absolute_rot_y = math.degrees(absolute_rot_y)
+            absolute_rot_z = math.degrees(absolute_rot_z)
             
             self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 1 if collision else 0])
             
@@ -250,7 +344,7 @@ class COLLISION_OT_calculate(Operator):
                     'absolute_rot_z': absolute_rot_z
                 })
             
-            # Increment indices
+            # Increment indices using more efficient approach
             self._cur_tz_idx += 1
             if self._cur_tz_idx >= len(self._trans_z_range):
                 self._cur_tz_idx = 0
@@ -275,15 +369,22 @@ class COLLISION_OT_calculate(Operator):
             self._completed_iterations += 1
             batch_counter += 1
             
-            # Update progress in the UI
+            # Update progress in the UI 
             if self._total_iterations > 0:
                 progress_pct = (self._completed_iterations / self._total_iterations) * 100
                 props.calculation_progress = progress_pct
+                
+                # Periodically update view for better user feedback
+                if not props.skip_scene_updates and (batch_counter % 25 == 0):
+                    for area in context.screen.areas:
+                        if area.type == 'VIEW_3D':
+                            area.tag_redraw()
         
-        # Reset object position after batch
-        rot_obj.location = self._orig_rot_loc.copy()
-        rot_obj.rotation_euler = self._orig_rot_rotation.copy()
-        context.view_layer.update()
+        # Restore original position if we're using scene updates
+        if not props.skip_scene_updates:
+            rot_obj.location = orig_loc
+            rot_obj.rotation_euler = orig_rot
+            context.view_layer.update()
         
         # Check if we're done
         if self._is_finished:
@@ -301,6 +402,9 @@ class COLLISION_OT_calculate(Operator):
         rot_obj.location = self._orig_rot_loc
         rot_obj.rotation_euler = self._orig_rot_rotation
         context.view_layer.update()
+        
+        # Clear the mesh caches to free memory
+        self._dist_meshes = {}
         
         if not cancelled:
             # Export CSV

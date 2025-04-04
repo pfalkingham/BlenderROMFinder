@@ -116,5 +116,17 @@ class COLLISION_PT_panel(Panel):
                 info_row = box.row()
                 info_row.label(text="Check NLA Editor to see animations", icon='INFO')
         
-        # Calculate button
-        layout.operator("collision.calculate", icon='PLAY')
+        # Performance options - keep this as a SEPARATE box
+        box = layout.box()
+        box.label(text="Performance Options:", icon='PREFERENCES')
+        
+        # Batch size
+        box.prop(props, "batch_size")
+        
+        # Skip viewport updates
+        box.prop(props, "skip_scene_updates")
+        
+        # Calculate button - place this OUTSIDE any box
+        row = layout.row(align=True)
+        row.scale_y = 1.5
+        row.operator("collision.calculate", icon='PLAY')

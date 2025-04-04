@@ -176,6 +176,21 @@ class CollisionProperties(PropertyGroup):
         max=10.0
     )
     
+    # Performance optimization options
+    skip_scene_updates: BoolProperty(
+        name="Skip Scene Updates",
+        description="Skip scene updates during calculation for better performance (objects won't move in viewport)",
+        default=True
+    )
+    
+    batch_size: IntProperty(
+        name="Batch Size",
+        description="Number of iterations to process per update (higher values = faster but less responsive UI)",
+        default=100,
+        min=10,
+        max=1000
+    )
+    
     # Progress tracking
     is_calculating: BoolProperty(
         name="Is Calculating",
