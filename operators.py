@@ -215,6 +215,9 @@ class COLLISION_OT_calculate(Operator):
         self._is_initialized = True
         self._is_finished = False
         
+        # Add a counter for non-collision keyframes
+        self._non_collision_frame = 1
+        
         # Update UI to show progress
         props.calculation_progress = 0.0
         props.is_calculating = True
@@ -302,19 +305,11 @@ class COLLISION_OT_calculate(Operator):
             
             self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 1 if collision else 0])
             
-            # If storing as attributes, save data
-            if props.store_as_attributes and collision:
-                self._collision_data.append({
-                    'rot_x': rot_x,
-                    'rot_y': rot_y,
-                    'rot_z': rot_z,
-                    'trans_x': trans_x,
-                    'trans_y': trans_y,
-                    'trans_z': trans_z,
-                    'absolute_rot_x': absolute_rot_x,
-                    'absolute_rot_y': absolute_rot_y,
-                    'absolute_rot_z': absolute_rot_z
-                })
+            # If pose is collision-free, insert keyframes immediately
+            if not collision:
+                rot_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
+                rot_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
+                self._non_collision_frame += 1
             
             # Increment indices using more efficient approach
             self._cur_tz_idx += 1
@@ -393,18 +388,8 @@ class COLLISION_OT_calculate(Operator):
                 
                 self.report({'INFO'}, f"Collision data exported to {filepath}")
             
-            # Always create the animation layer if visualize_collisions is enabled
-            # or if collision data is being stored via attributes
-            if props.visualize_collisions or (props.store_as_attributes and self._collision_data):
-                if props.store_as_attributes and self._collision_data:
-                    self.store_collision_data_as_attributes(context, props.distal_object, self._collision_data, props.attribute_name_prefix)
-                    self.report({'INFO'}, f"Stored {len(self._collision_data)} collision points as attributes")
-                context.view_layer.update()
-                self.visualize_collision_data(context, props.distal_object, self._collision_data, props.attribute_name_prefix)
-                if props.visualize_collisions:
-                    self.report({'INFO'}, f"Animation layer of non-collision poses created and shown")
-                else:
-                    self.report({'INFO'}, f"Animation layer created (but hidden, original animation shown)")
+            # Removed separate keyframe operator call.
+            self.report({'INFO'}, f"Inserted {self._non_collision_frame-1} keyframes on collision-free poses")
         
         # Reset calculation state
         props.is_calculating = False
