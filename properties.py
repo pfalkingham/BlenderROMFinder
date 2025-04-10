@@ -176,19 +176,12 @@ class CollisionProperties(PropertyGroup):
         max=10.0
     )
     
-    # Performance optimization options
-    skip_scene_updates: BoolProperty(
-        name="Skip Scene Updates",
-        description="Skip scene updates during calculation for better performance (objects won't move in viewport)",
-        default=True
-    )
-    
     batch_size: IntProperty(
         name="Batch Size",
         description="Number of iterations to process per update (higher values = faster but less responsive UI)",
         default=100,
         min=10,
-        max=1000
+        max=5000
     )
     
     # Progress tracking
@@ -227,7 +220,7 @@ class CollisionProperties(PropertyGroup):
     )
     
     visualize_collisions: BoolProperty(
-        name="Create & Show Animation Layer",
+        name="Show Animation Layer",
         description="Create an NLA animation layer with non-colliding poses and make it visible",
         default=True
     )

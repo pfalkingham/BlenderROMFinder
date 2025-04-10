@@ -263,59 +263,31 @@ class COLLISION_OT_calculate(Operator):
             trans_y = self._trans_y_range[self._cur_ty_idx]
             trans_z = self._trans_z_range[self._cur_tz_idx]
             
-            # Method 1: Update the scene (slower but visible)
-            if not props.skip_scene_updates:
-                # Reset rotation object to original position
-                rot_obj.location = self._orig_rot_loc.copy()
-                rot_obj.rotation_euler = self._orig_rot_rotation.copy()
-                
-                # Apply rotation (converting degrees to radians)
-                # The additional rotation is applied to the current rotation
-                rot_euler = mathutils.Euler(
-                    (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
-                    'XYZ'
-                )
-                
-                # Apply rotation to the rotation object
-                rot_obj.rotation_euler.rotate(rot_euler)
-                
-                # Apply translation to the rotation object
-                rot_obj.location.x += trans_x
-                rot_obj.location.y += trans_y
-                rot_obj.location.z += trans_z
-                
-                # Update the scene (expensive operation)
-                context.view_layer.update()
-                
-                # Check for collision using the pre-calculated proximal BVH tree
-                collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
+            # Always use method 1: update the scene
+            # Reset rotation object to original position
+            rot_obj.location = self._orig_rot_loc.copy()
+            rot_obj.rotation_euler = self._orig_rot_rotation.copy()
             
-            # Method 2: Calculate in memory without scene updates (much faster)
-            else:
-                # Calculate the rotation matrix from Euler angles
-                rot_mat = mathutils.Euler(
-                    (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
-                    'XYZ'
-                ).to_matrix().to_4x4()
-                
-                # Create translation matrix
-                trans_mat = mathutils.Matrix.Translation((trans_x, trans_y, trans_z))
-                
-                # Get the original object matrices
-                orig_rot_mat = self._orig_rot_rotation.to_matrix().to_4x4()
-                orig_loc_mat = mathutils.Matrix.Translation(self._orig_rot_loc)
-                
-                # Combine transformations
-                # Order matters: original position, then rotation, then translation
-                transform_matrix = trans_mat @ rot_mat @ orig_rot_mat @ orig_loc_mat
-                
-                # Check for collision using matrices directly without updating the scene
-                collision = self.check_collision(
-                    prox_obj, 
-                    dist_obj, 
-                    self._prox_bvh,
-                    transform_matrix
-                )
+            # Apply rotation (converting degrees to radians)
+            # The additional rotation is applied to the current rotation
+            rot_euler = mathutils.Euler(
+                (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
+                'XYZ'
+            )
+            
+            # Apply rotation to the rotation object
+            rot_obj.rotation_euler.rotate(rot_euler)
+            
+            # Apply translation to the rotation object
+            rot_obj.location.x += trans_x
+            rot_obj.location.y += trans_y
+            rot_obj.location.z += trans_z
+            
+            # Update the scene (expensive operation)
+            context.view_layer.update()
+            
+            # Check for collision using the pre-calculated proximal BVH tree
+            collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
             
             # Record data
             # Calculate absolute rotations for clarity
@@ -375,16 +347,15 @@ class COLLISION_OT_calculate(Operator):
                 props.calculation_progress = progress_pct
                 
                 # Periodically update view for better user feedback
-                if not props.skip_scene_updates and (batch_counter % 25 == 0):
+                if (batch_counter % 25 == 0):
                     for area in context.screen.areas:
                         if area.type == 'VIEW_3D':
                             area.tag_redraw()
         
-        # Restore original position if we're using scene updates
-        if not props.skip_scene_updates:
-            rot_obj.location = orig_loc
-            rot_obj.rotation_euler = orig_rot
-            context.view_layer.update()
+        # Always restore original position and update
+        rot_obj.location = orig_loc
+        rot_obj.rotation_euler = orig_rot
+        context.view_layer.update()
         
         # Check if we're done
         if self._is_finished:
@@ -422,15 +393,18 @@ class COLLISION_OT_calculate(Operator):
                 
                 self.report({'INFO'}, f"Collision data exported to {filepath}")
             
-            # Store data as attributes if enabled
-            if props.store_as_attributes and self._collision_data:
-                self.store_collision_data_as_attributes(context, props.distal_object, self._collision_data, props.attribute_name_prefix)
-                self.report({'INFO'}, f"Stored {len(self._collision_data)} collision points as attributes")
-                
-                # Always create visualization, but control visibility with the checkbox
+            # Always create the animation layer if visualize_collisions is enabled
+            # or if collision data is being stored via attributes
+            if props.visualize_collisions or (props.store_as_attributes and self._collision_data):
+                if props.store_as_attributes and self._collision_data:
+                    self.store_collision_data_as_attributes(context, props.distal_object, self._collision_data, props.attribute_name_prefix)
+                    self.report({'INFO'}, f"Stored {len(self._collision_data)} collision points as attributes")
+                context.view_layer.update()
                 self.visualize_collision_data(context, props.distal_object, self._collision_data, props.attribute_name_prefix)
-                show_status = "shown" if props.visualize_collisions else "created but hidden"
-                self.report({'INFO'}, f"Animation layer of non-collision poses {show_status}")
+                if props.visualize_collisions:
+                    self.report({'INFO'}, f"Animation layer of non-collision poses created and shown")
+                else:
+                    self.report({'INFO'}, f"Animation layer created (but hidden, original animation shown)")
         
         # Reset calculation state
         props.is_calculating = False
@@ -706,10 +680,6 @@ class COLLISION_OT_calculate(Operator):
                     
                     # Set as active action (visible in animation panel)
                     rot_obj.animation_data.action = new_action
-                    
-                    # Move ROM track to the top to ensure it's applied
-                    while rot_obj.animation_data.nla_tracks.find(track.name) > 0:
-                        bpy.ops.anim.nla_track_move_up({"object": rot_obj}, track_index=rot_obj.animation_data.nla_tracks.find(track.name))
                 else:
                     # Hide ROM Safe Poses, show Original Animation
                     track.mute = True
@@ -718,10 +688,6 @@ class COLLISION_OT_calculate(Operator):
                     
                     # Set original as active action
                     rot_obj.animation_data.action = original_action
-                    
-                    # Move Original track to the top to ensure it's applied
-                    while rot_obj.animation_data.nla_tracks.find(orig_track.name) > 0:
-                        bpy.ops.anim.nla_track_move_up({"object": rot_obj}, track_index=rot_obj.animation_data.nla_tracks.find(orig_track.name))
             else:
                 # If there was no original animation
                 if props.visualize_collisions:

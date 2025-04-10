@@ -123,9 +123,6 @@ class COLLISION_PT_panel(Panel):
         # Batch size
         box.prop(props, "batch_size")
         
-        # Skip viewport updates
-        box.prop(props, "skip_scene_updates")
-        
         # Calculate button - place this OUTSIDE any box
         row = layout.row(align=True)
         row.scale_y = 1.5
