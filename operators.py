@@ -307,8 +307,9 @@ class COLLISION_OT_calculate(Operator):
             
             # If pose is collision-free, insert keyframes immediately
             if not collision:
-                rot_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
-                rot_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
+                if props.visualize_collisions:
+                    rot_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
+                    rot_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
                 self._non_collision_frame += 1
             
             # Increment indices using more efficient approach
@@ -388,6 +389,12 @@ class COLLISION_OT_calculate(Operator):
                 
                 self.report({'INFO'}, f"Collision data exported to {filepath}")
             
+            # Only store the collision data as an attribute if enabled in the UI
+            if props.store_as_attributes and props.attribute_name_prefix:
+                collision_data = self._csv_data[1:]
+                self.store_collision_data_as_attributes(context, rot_obj, collision_data, props.attribute_name_prefix)
+            
+
             # Removed separate keyframe operator call.
             self.report({'INFO'}, f"Inserted {self._non_collision_frame-1} keyframes on collision-free poses")
         
@@ -470,13 +477,11 @@ class COLLISION_OT_calculate(Operator):
         # Store the collision count
         obj[f"{prefix}count"] = len(collision_data)
         
-        # Prepare a compact representation of collision data
-        compact_data = []
-        for data in collision_data:
-            compact_data.append([
-                data['rot_x'], data['rot_y'], data['rot_z'],
-                data['trans_x'], data['trans_y'], data['trans_z']
-            ])
+        # Prepare a compact representation of collision data.
+        # Each row is expected to be: [rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, collision]
+        # Here we store only the pose data (first six values). Adjust if needed.
+        compact_data = [ row[:6] for row in collision_data ]
+        
         
         # Store as JSON string in a single attribute
         obj[f"{prefix}data"] = json.dumps(compact_data)
