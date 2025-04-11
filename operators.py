@@ -274,8 +274,8 @@ class COLLISION_OT_calculate(Operator):
             # Apply rotation (converting degrees to radians)
             # The additional rotation is applied to the current rotation
             rot_euler = mathutils.Euler(
-                (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
-                'XYZ'
+                (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)),
+                props.rot_order  # use selected rotation order
             )
             
             # Apply rotation to the rotation object

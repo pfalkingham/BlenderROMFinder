@@ -103,6 +103,20 @@ class CollisionProperties(PropertyGroup):
         max=90.0
     )
     
+    rot_order: EnumProperty(
+        name="Rotation Order",
+        description="Order in which rotations are applied",
+        items=[
+            ("XYZ", "XYZ", ""),
+            ("XZY", "XZY", ""),
+            ("YXZ", "YXZ", ""),
+            ("YZX", "YZX", ""),
+            ("ZXY", "ZXY", ""),
+            ("ZYX", "ZYX", "")
+        ],
+        default="ZYX"
+    )
+    
     # Translation parameters
     trans_x_min: FloatProperty(
         name="X Min",
