@@ -488,6 +488,8 @@ class COLLISION_OT_calculate(Operator):
         
         self.report({'INFO'}, f"Stored collision data in compact format")
     
+    # Commented out unused function: get_collision_data_from_attributes
+    '''
     def get_collision_data_from_attributes(self, obj, prefix):
         """Retrieve collision data from compact JSON attribute"""
         if f"{prefix}data" not in obj:
@@ -509,7 +511,10 @@ class COLLISION_OT_calculate(Operator):
             })
         
         return collision_data
-    
+    '''
+
+    # Commented out unused function: visualize_collision_data
+    '''
     def visualize_collision_data(self, context, obj, collision_data, prefix):
         """Create an NLA strip for positions without collisions"""
         self.report({'INFO'}, f"Creating animation layer for non-collision poses")
@@ -712,7 +717,10 @@ class COLLISION_OT_calculate(Operator):
         # Reset object to original position
         rot_obj.location = orig_rot_loc
         rot_obj.rotation_euler = orig_rot_rotation
-    
+    '''
+
+    # Commented out unused function: make_collection_visible
+    '''
     def make_collection_visible(self, layer_collection, target_name):
         """Recursively make a collection visible"""
         if layer_collection.name == target_name:
@@ -725,3 +733,6 @@ class COLLISION_OT_calculate(Operator):
                 return True
         
         return False
+    '''
+    
+# ...existing code...
