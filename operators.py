@@ -63,6 +63,7 @@ class COLLISION_OT_calculate(Operator):
     _prox_mesh = None
     _dist_meshes = {}  # Cache for distal object transformed meshes
     _last_transform_key = None  # Track the last transformation to avoid redundant BVH creation
+    _orig_transform_orientation = None  # Store original orientation
     
     def check_collision(self, prox_obj, dist_obj, prox_bvh=None, transform_matrix=None):
         """Use BVH trees to check for collision between two objects
@@ -210,6 +211,10 @@ class COLLISION_OT_calculate(Operator):
         self._cur_tx_idx = 0
         self._cur_ty_idx = 0
         self._cur_tz_idx = 0
+        
+        # Save and set transform orientation to LOCAL
+        self._orig_transform_orientation = context.scene.transform_orientation_slots[0].type
+        context.scene.transform_orientation_slots[0].type = 'LOCAL'
         
         # Set initialization flag
         self._is_initialized = True
@@ -443,6 +448,11 @@ class COLLISION_OT_calculate(Operator):
         self._orig_rot_loc = None
         self._orig_rot_rotation = None
         
+        # Restore original transform orientation
+        if self._orig_transform_orientation is not None:
+            context.scene.transform_orientation_slots[0].type = self._orig_transform_orientation
+            self._orig_transform_orientation = None
+        
         return
     
     def modal(self, context, event):
@@ -500,6 +510,11 @@ class COLLISION_OT_calculate(Operator):
         # call finalize to clean up
         if self._is_initialized and not self._is_finished:
             self.finalize_calculation(context, cancelled=True)
+        
+        # Restore original transform orientation if needed
+        if self._orig_transform_orientation is not None:
+            context.scene.transform_orientation_slots[0].type = self._orig_transform_orientation
+            self._orig_transform_orientation = None
     
     def store_collision_data_as_attributes(self, context, obj, collision_data, prefix):
         """Store collision data as compact JSON in a single attribute"""
