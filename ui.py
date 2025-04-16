@@ -39,6 +39,9 @@ class COLLISION_PT_panel(Panel):
         box = layout.box()
         box.label(text="Rotation (degrees):")
         
+        # Add dropdown for rotation order
+        box.prop(props, "rot_order", text="Order")
+        
         # Add column headers for rotation
         header_row = box.row(align=True)
         header_row.label(text="")  # Empty space for axis label
@@ -122,9 +125,6 @@ class COLLISION_PT_panel(Panel):
         
         # Batch size
         box.prop(props, "batch_size")
-        
-        # Skip viewport updates
-        box.prop(props, "skip_scene_updates")
         
         # Calculate button - place this OUTSIDE any box
         row = layout.row(align=True)
