@@ -9,7 +9,6 @@ import json
 import time
 from mathutils import Matrix
 from bpy.types import Operator
-import concurrent.futures
 
 class COLLISION_OT_cancel(Operator):
     """Cancel the current collision calculation"""
@@ -64,7 +63,6 @@ class COLLISION_OT_calculate(Operator):
     _prox_mesh = None
     _dist_meshes = {}  # Cache for distal object transformed meshes
     _last_transform_key = None  # Track the last transformation to avoid redundant BVH creation
-    _orig_transform_orientation = None  # Store original orientation
     
     def check_collision(self, prox_obj, dist_obj, prox_bvh=None, transform_matrix=None):
         """Use BVH trees to check for collision between two objects
@@ -80,29 +78,6 @@ class COLLISION_OT_calculate(Operator):
         # Create BVH tree for proximal object if not provided
         if prox_bvh is None:
             prox_bvh = self.create_bvh_tree_from_object(prox_obj)
-        
-        # Fast bounding box check before BVH
-        # Get world-space bounding box for proximal object
-        prox_bbox = [prox_obj.matrix_world @ mathutils.Vector(corner) for corner in prox_obj.bound_box]
-        prox_min = mathutils.Vector((min(v.x for v in prox_bbox), min(v.y for v in prox_bbox), min(v.z for v in prox_bbox)))
-        prox_max = mathutils.Vector((max(v.x for v in prox_bbox), max(v.y for v in prox_bbox), max(v.z for v in prox_bbox)))
-
-        # Get transformed bounding box for distal object
-        dist_bbox = [mathutils.Vector(corner) for corner in dist_obj.bound_box]
-        if transform_matrix is not None:
-            dist_bbox = [transform_matrix @ (dist_obj.matrix_world @ v) for v in dist_bbox]
-        else:
-            dist_bbox = [dist_obj.matrix_world @ v for v in dist_bbox]
-        dist_min = mathutils.Vector((min(v.x for v in dist_bbox), min(v.y for v in dist_bbox), min(v.z for v in dist_bbox)))
-        dist_max = mathutils.Vector((max(v.x for v in dist_bbox), max(v.y for v in dist_bbox), max(v.z for v in dist_bbox)))
-
-        # Check for AABB overlap
-        if (
-            (prox_max.x < dist_min.x or prox_min.x > dist_max.x) or
-            (prox_max.y < dist_min.y or prox_min.y > dist_max.y) or
-            (prox_max.z < dist_min.z or prox_min.z > dist_max.z)
-        ):
-            return False  # No overlap, so no collision
         
         # Create a transform key for caching
         transform_key = None
@@ -236,10 +211,6 @@ class COLLISION_OT_calculate(Operator):
         self._cur_ty_idx = 0
         self._cur_tz_idx = 0
         
-        # Save and set transform orientation to LOCAL
-        self._orig_transform_orientation = context.scene.transform_orientation_slots[0].type
-        context.scene.transform_orientation_slots[0].type = 'LOCAL'
-        
         # Set initialization flag
         self._is_initialized = True
         self._is_finished = False
@@ -253,36 +224,6 @@ class COLLISION_OT_calculate(Operator):
         
         return True
     
-    def _process_single_transform(self, prox_obj, dist_obj, prox_bvh, orig_rot_rotation, orig_rot_loc, rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, props):
-        # Calculate the rotation matrix from Euler angles
-        rot_mat = mathutils.Euler(
-            (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
-            'XYZ'
-        ).to_matrix().to_4x4()
-        # Create translation matrix
-        trans_mat = mathutils.Matrix.Translation((trans_x, trans_y, trans_z))
-        # Get the original object matrices
-        orig_rot_mat = orig_rot_rotation.to_matrix().to_4x4()
-        orig_loc_mat = mathutils.Matrix.Translation(orig_rot_loc)
-        # Combine transformations
-        transform_matrix = trans_mat @ rot_mat @ orig_rot_mat @ orig_loc_mat
-        # Check for collision using matrices directly without updating the scene
-        collision = self.check_collision(
-            prox_obj, 
-            dist_obj, 
-            prox_bvh,
-            transform_matrix
-        )
-        # Calculate absolute rotations for clarity
-        absolute_rot_x = orig_rot_rotation.x + math.radians(rot_x)
-        absolute_rot_y = orig_rot_rotation.y + math.radians(rot_y)
-        absolute_rot_z = orig_rot_rotation.z + math.radians(rot_z)
-        # Convert back to degrees for storage
-        absolute_rot_x = math.degrees(absolute_rot_x)
-        absolute_rot_y = math.degrees(absolute_rot_y)
-        absolute_rot_z = math.degrees(absolute_rot_z)
-        return (rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, collision, absolute_rot_x, absolute_rot_y, absolute_rot_z)
-
     def process_batch(self, context):
         """Process a batch of calculations"""
         props = context.scene.collision_props
@@ -306,180 +247,72 @@ class COLLISION_OT_calculate(Operator):
         batch_counter = 0
         last_view_update = 0
         
-        if not props.skip_scene_updates:
-            while batch_counter < batch_size:
-                # Check if we need to stop
-                if not props.is_calculating:
-                    self.report({'INFO'}, "Calculation cancelled by user")
-                    self.finalize_calculation(context, cancelled=True)
-                    return False
-                
-                # Get current indices and values
-                if self._cur_x_idx >= len(self._rot_x_range):
-                    self._is_finished = True
-                    break
-                    
-                rot_x = self._rot_x_range[self._cur_x_idx]
-                rot_y = self._rot_y_range[self._cur_y_idx]
-                rot_z = self._rot_z_range[self._cur_z_idx]
-                trans_x = self._trans_x_range[self._cur_tx_idx]
-                trans_y = self._trans_y_range[self._cur_ty_idx]
-                trans_z = self._trans_z_range[self._cur_tz_idx]
-                
-                # Method 1: Update the scene (slower but visible)
-                if not props.skip_scene_updates:
-                    # Reset rotation object to original position
-                    rot_obj.location = self._orig_rot_loc.copy()
-                    rot_obj.rotation_euler = self._orig_rot_rotation.copy()
-                    
-                    # Apply rotation (converting degrees to radians)
-                    # The additional rotation is applied to the current rotation
-                    rot_euler = mathutils.Euler(
-                        (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
-                        'XYZ'
-                    )
-                    
-                    # Apply rotation to the rotation object
-                    rot_obj.rotation_euler.rotate(rot_euler)
-                    
-                    # Apply translation to the rotation object
-                    rot_obj.location.x += trans_x
-                    rot_obj.location.y += trans_y
-                    rot_obj.location.z += trans_z
-                    
-                    # Update the scene (expensive operation)
-                    context.view_layer.update()
-                    
-                    # Check for collision using the pre-calculated proximal BVH tree
-                    collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
-                
-                # Method 2: Calculate in memory without scene updates (much faster)
-                else:
-                    # Calculate the rotation matrix from Euler angles
-                    rot_mat = mathutils.Euler(
-                        (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), 
-                        'XYZ'
-                    ).to_matrix().to_4x4()
-                    
-                    # Create translation matrix
-                    trans_mat = mathutils.Matrix.Translation((trans_x, trans_y, trans_z))
-                    
-                    # Get the original object matrices
-                    orig_rot_mat = self._orig_rot_rotation.to_matrix().to_4x4()
-                    orig_loc_mat = mathutils.Matrix.Translation(self._orig_rot_loc)
-                    
-                    # Combine transformations
-                    # Order matters: original position, then rotation, then translation
-                    transform_matrix = trans_mat @ rot_mat @ orig_rot_mat @ orig_loc_mat
-                    
-                    # Check for collision using matrices directly without updating the scene
-                    collision = self.check_collision(
-                        prox_obj, 
-                        dist_obj, 
-                        self._prox_bvh,
-                        transform_matrix
-                    )
-                
-                # Record data
-                # Calculate absolute rotations for clarity
-                absolute_rot_x = self._orig_rot_rotation.x + math.radians(rot_x)
-                absolute_rot_y = self._orig_rot_rotation.y + math.radians(rot_y)
-                absolute_rot_z = self._orig_rot_rotation.z + math.radians(rot_z)
-                
-                # Convert back to degrees for storage
-                absolute_rot_x = math.degrees(absolute_rot_x)
-                absolute_rot_y = math.degrees(absolute_rot_y)
-                absolute_rot_z = math.degrees(absolute_rot_z)
-                
-                self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 1 if collision else 0])
-                
-                # If storing as attributes, save data
-                if props.store_as_attributes and collision:
-                    self._collision_data.append({
-                        'rot_x': rot_x,
-                        'rot_y': rot_y,
-                        'rot_z': rot_z,
-                        'trans_x': trans_x,
-                        'trans_y': trans_y,
-                        'trans_z': trans_z,
-                        'absolute_rot_x': absolute_rot_x,
-                        'absolute_rot_y': absolute_rot_y,
-                        'absolute_rot_z': absolute_rot_z
-                    })
-                
-                # Increment indices using more efficient approach
-                self._cur_tz_idx += 1
-                if self._cur_tz_idx >= len(self._trans_z_range):
-                    self._cur_tz_idx = 0
-                    self._cur_ty_idx += 1
-                    if self._cur_ty_idx >= len(self._trans_y_range):
-                        self._cur_ty_idx = 0
-                        self._cur_tx_idx += 1
-                        if self._cur_tx_idx >= len(self._trans_x_range):
-                            self._cur_tx_idx = 0
-                            self._cur_z_idx += 1
-                            if self._cur_z_idx >= len(self._rot_z_range):
-                                self._cur_z_idx = 0
-                                self._cur_y_idx += 1
-                                if self._cur_y_idx >= len(self._rot_y_range):
-                                    self._cur_y_idx = 0
-                                    self._cur_x_idx += 1
-                                    if self._cur_x_idx >= len(self._rot_x_range):
-                                        self._is_finished = True
-                                        break
-                
-                # Update progress counter
-                self._completed_iterations += 1
-                batch_counter += 1
-                
-                # Update progress in the UI 
-                if self._total_iterations > 0:
-                    progress_pct = (self._completed_iterations / self._total_iterations) * 100
-                    props.calculation_progress = progress_pct
-                    
-                    # Periodically update view for better user feedback
-                    if not props.skip_scene_updates and (batch_counter % 25 == 0):
-                        for area in context.screen.areas:
-                            if area.type == 'VIEW_3D':
-                                area.tag_redraw()
-            
-            # Restore original position if we're using scene updates
-            if not props.skip_scene_updates:
-                rot_obj.location = orig_loc
-                rot_obj.rotation_euler = orig_rot
-                context.view_layer.update()
-            
-            # Check if we're done
-            if self._is_finished:
-                self.finalize_calculation(context)
-                return False
-                
-            return True
-
-        # Parallelized batch for skip_scene_updates == True
-        prox_obj = props.proximal_object
-        dist_obj = props.distal_object
-        rot_obj = props.rotational_object if props.rotational_object else dist_obj
-        orig_rot_rotation = self._orig_rot_rotation
-        orig_rot_loc = self._orig_rot_loc
-        prox_bvh = self._prox_bvh
-
-        batch_size = props.batch_size
-        batch_counter = 0
-        transforms = []
-        # Prepare the batch of transforms to process
         while batch_counter < batch_size:
+            # Check if we need to stop
+            if not props.is_calculating:
+                self.report({'INFO'}, "Calculation cancelled by user")
+                self.finalize_calculation(context, cancelled=True)
+                return False
+            
+            # Get current indices and values
             if self._cur_x_idx >= len(self._rot_x_range):
                 self._is_finished = True
                 break
+                
             rot_x = self._rot_x_range[self._cur_x_idx]
             rot_y = self._rot_y_range[self._cur_y_idx]
             rot_z = self._rot_z_range[self._cur_z_idx]
             trans_x = self._trans_x_range[self._cur_tx_idx]
             trans_y = self._trans_y_range[self._cur_ty_idx]
             trans_z = self._trans_z_range[self._cur_tz_idx]
-            transforms.append((rot_x, rot_y, rot_z, trans_x, trans_y, trans_z))
-            # Increment indices (same as before)
+            
+            # Always use method 1: update the scene
+            # Reset rotation object to original position
+            rot_obj.location = self._orig_rot_loc.copy()
+            rot_obj.rotation_euler = self._orig_rot_rotation.copy()
+            
+            # Apply rotation (converting degrees to radians)
+            # The additional rotation is applied to the current rotation
+            rot_euler = mathutils.Euler(
+                (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)),
+                props.rot_order  # use selected rotation order
+            )
+            
+            # Apply rotation to the rotation object
+            rot_obj.rotation_euler.rotate(rot_euler)
+            
+            # Apply translation to the rotation object
+            rot_obj.location.x += trans_x
+            rot_obj.location.y += trans_y
+            rot_obj.location.z += trans_z
+            
+            # Update the scene (expensive operation)
+            context.view_layer.update()
+            
+            # Check for collision using the pre-calculated proximal BVH tree
+            collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
+            
+            # Record data
+            # Calculate absolute rotations for clarity
+            absolute_rot_x = self._orig_rot_rotation.x + math.radians(rot_x)
+            absolute_rot_y = self._orig_rot_rotation.y + math.radians(rot_y)
+            absolute_rot_z = self._orig_rot_rotation.z + math.radians(rot_z)
+            
+            # Convert back to degrees for storage
+            absolute_rot_x = math.degrees(absolute_rot_x)
+            absolute_rot_y = math.degrees(absolute_rot_y)
+            absolute_rot_z = math.degrees(absolute_rot_z)
+            
+            self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 1 if collision else 0])
+            
+            # If pose is collision-free, insert keyframes immediately
+            if not collision:
+                if props.visualize_collisions:
+                    rot_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
+                    rot_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
+                self._non_collision_frame += 1
+            
+            # Increment indices using more efficient approach
             self._cur_tz_idx += 1
             if self._cur_tz_idx >= len(self._trans_z_range):
                 self._cur_tz_idx = 0
@@ -499,58 +332,32 @@ class COLLISION_OT_calculate(Operator):
                                 if self._cur_x_idx >= len(self._rot_x_range):
                                     self._is_finished = True
                                     break
-            batch_counter += 1
-
-        # Parallel execution
-        results = []
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [
-                executor.submit(
-                    self._process_single_transform,
-                    prox_obj, dist_obj, prox_bvh, orig_rot_rotation, orig_rot_loc,
-                    rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, props
-                )
-                for (rot_x, rot_y, rot_z, trans_x, trans_y, trans_z) in transforms
-            ]
-            for f in concurrent.futures.as_completed(futures):
-                results.append(f.result())
-
-        # Sort results to preserve order (optional, not strictly necessary)
-        results.sort(key=lambda r: (
-            self._rot_x_range.index(r[0]),
-            self._rot_y_range.index(r[1]),
-            self._rot_z_range.index(r[2]),
-            self._trans_x_range.index(r[3]),
-            self._trans_y_range.index(r[4]),
-            self._trans_z_range.index(r[5]),
-        ))
-
-        # Store results
-        for rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, collision, absolute_rot_x, absolute_rot_y, absolute_rot_z in results:
-            self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 1 if collision else 0])
-            if props.store_as_attributes and collision:
-                self._collision_data.append({
-                    'rot_x': rot_x,
-                    'rot_y': rot_y,
-                    'rot_z': rot_z,
-                    'trans_x': trans_x,
-                    'trans_y': trans_y,
-                    'trans_z': trans_z,
-                    'absolute_rot_x': absolute_rot_x,
-                    'absolute_rot_y': absolute_rot_y,
-                    'absolute_rot_z': absolute_rot_z
-                })
+            
+            # Update progress counter
             self._completed_iterations += 1
-
-        # Update progress in the UI
-        if self._total_iterations > 0:
-            progress_pct = (self._completed_iterations / self._total_iterations) * 100
-            props.calculation_progress = progress_pct
-
+            batch_counter += 1
+            
+            # Update progress in the UI 
+            if self._total_iterations > 0:
+                progress_pct = (self._completed_iterations / self._total_iterations) * 100
+                props.calculation_progress = progress_pct
+                
+                # Periodically update view for better user feedback
+                if (batch_counter % 25 == 0):
+                    for area in context.screen.areas:
+                        if area.type == 'VIEW_3D':
+                            area.tag_redraw()
+        
+        # Always restore original position and update
+        rot_obj.location = orig_loc
+        rot_obj.rotation_euler = orig_rot
+        context.view_layer.update()
+        
+        # Check if we're done
         if self._is_finished:
             self.finalize_calculation(context)
             return False
-
+            
         return True
     
     def finalize_calculation(self, context, cancelled=False):
@@ -601,11 +408,6 @@ class COLLISION_OT_calculate(Operator):
         self._prox_bvh = None
         self._orig_rot_loc = None
         self._orig_rot_rotation = None
-        
-        # Restore original transform orientation
-        if self._orig_transform_orientation is not None:
-            context.scene.transform_orientation_slots[0].type = self._orig_transform_orientation
-            self._orig_transform_orientation = None
         
         return
     
@@ -664,11 +466,6 @@ class COLLISION_OT_calculate(Operator):
         # call finalize to clean up
         if self._is_initialized and not self._is_finished:
             self.finalize_calculation(context, cancelled=True)
-        
-        # Restore original transform orientation if needed
-        if self._orig_transform_orientation is not None:
-            context.scene.transform_orientation_slots[0].type = self._orig_transform_orientation
-            self._orig_transform_orientation = None
     
     def store_collision_data_as_attributes(self, context, obj, collision_data, prefix):
         """Store collision data as compact JSON in a single attribute"""
