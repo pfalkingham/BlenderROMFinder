@@ -63,6 +63,7 @@ class COLLISION_OT_calculate(Operator):
     _prox_mesh = None
     _dist_meshes = {}  # Cache for distal object transformed meshes
     _last_transform_key = None  # Track the last transformation to avoid redundant BVH creation
+    _start_time = None
     
     def check_collision(self, prox_obj, dist_obj, prox_bvh=None, transform_matrix=None):
         """Use BVH trees to check for collision between two objects
@@ -222,6 +223,8 @@ class COLLISION_OT_calculate(Operator):
         props.calculation_progress = 0.0
         props.is_calculating = True
         
+        self._start_time = time.time()
+        
         return True
     
     def process_batch(self, context):
@@ -341,6 +344,15 @@ class COLLISION_OT_calculate(Operator):
             if self._total_iterations > 0:
                 progress_pct = (self._completed_iterations / self._total_iterations) * 100
                 props.calculation_progress = progress_pct
+                # Time remaining estimate
+                if self._completed_iterations > 0 and self._start_time:
+                    elapsed = time.time() - self._start_time
+                    rate = self._completed_iterations / elapsed
+                    remaining = (self._total_iterations - self._completed_iterations) / rate if rate > 0 else 0
+                    mins, secs = divmod(int(remaining), 60)
+                    props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
+                else:
+                    props.time_remaining = "Calculating..."
                 
                 # Periodically update view for better user feedback
                 if (batch_counter % 25 == 0):

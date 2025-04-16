@@ -214,6 +214,12 @@ class CollisionProperties(PropertyGroup):
         subtype='PERCENTAGE'
     )
     
+    time_remaining: StringProperty(
+        name="Time Remaining",
+        description="Estimated time remaining for the calculation",
+        default=""
+    )
+    
     export_to_csv: BoolProperty(
         name="Export to CSV",
         description="Enable to export collision data to a CSV file",

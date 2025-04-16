@@ -23,6 +23,10 @@ class COLLISION_PT_panel(Panel):
             progress_row = box.row()
             progress_row.prop(props, "calculation_progress", text="Progress")
             
+            # Time remaining
+            if props.time_remaining:
+                box.label(text=props.time_remaining)
+            
             # Cancel button
             cancel_row = box.row()
             cancel_row.operator("collision.cancel", icon='X')
