@@ -65,6 +65,25 @@ class COLLISION_OT_calculate(Operator):
     _last_transform_key = None  # Track the last transformation to avoid redundant BVH creation
     _start_time = None
     
+    def create_bvh_tree(self, obj, transform_matrix=None):
+        """Create a BVH tree from an object's mesh data, with optional transformation."""
+        bm = bmesh.new()
+        mesh = obj.to_mesh()
+        bm.from_mesh(mesh)
+        if transform_matrix is not None:
+            bm.transform(transform_matrix)
+        else:
+            bm.transform(obj.matrix_world)
+        bvh = mathutils.bvhtree.BVHTree.FromBMesh(bm)
+        bm.free()
+        obj.to_mesh_clear()
+        return bvh
+
+    def restore_object_transform(self, obj, location, rotation):
+        """Restore the object's location and rotation."""
+        obj.location = location.copy()
+        obj.rotation_euler = rotation.copy()
+
     def check_collision(self, prox_obj, dist_obj, prox_bvh=None, transform_matrix=None):
         """Use BVH trees to check for collision between two objects
         
@@ -78,7 +97,7 @@ class COLLISION_OT_calculate(Operator):
         
         # Create BVH tree for proximal object if not provided
         if prox_bvh is None:
-            prox_bvh = self.create_bvh_tree_from_object(prox_obj)
+            prox_bvh = self.create_bvh_tree(prox_obj)
         
         # Create a transform key for caching
         transform_key = None
@@ -91,10 +110,7 @@ class COLLISION_OT_calculate(Operator):
             dist_bvh = self._dist_meshes[transform_key]
         else:
             # Create a new BVH tree for distal object
-            if transform_matrix:
-                dist_bvh = self.create_bvh_tree_with_transform(dist_obj, transform_matrix)
-            else:
-                dist_bvh = self.create_bvh_tree_from_object(dist_obj)
+            dist_bvh = self.create_bvh_tree(dist_obj, transform_matrix)
             
             # Cache this BVH tree
             if transform_key:
@@ -110,39 +126,6 @@ class COLLISION_OT_calculate(Operator):
         
         # If any overlap is found, return True
         return len(overlap_pairs) > 0
-    
-    def create_bvh_tree_from_object(self, obj):
-        """Create a BVH tree from an object's mesh data"""
-        bm = bmesh.new()
-        mesh = obj.to_mesh()
-        bm.from_mesh(mesh)
-        bm.transform(obj.matrix_world)
-        bvh = mathutils.bvhtree.BVHTree.FromBMesh(bm)
-        
-        # Clean up
-        bm.free()
-        obj.to_mesh_clear()
-        
-        return bvh
-    
-    def create_bvh_tree_with_transform(self, obj, transform_matrix):
-        """Create a BVH tree with a specific transformation matrix"""
-        bm = bmesh.new()
-        mesh = obj.to_mesh()
-        bm.from_mesh(mesh)
-        
-        # Apply the transform directly to the BMesh vertices
-        # This avoids the need for a scene update
-        bm.transform(transform_matrix)
-        
-        # Create BVH tree
-        bvh = mathutils.bvhtree.BVHTree.FromBMesh(bm)
-        
-        # Clean up
-        bm.free()
-        obj.to_mesh_clear()
-        
-        return bvh
     
     def initialize_calculation(self, context):
         """Set up calculation parameters and state"""
@@ -199,7 +182,7 @@ class COLLISION_OT_calculate(Operator):
         # Pre-calculate the BVH tree for the proximal object (which doesn't move)
         # This is a major optimization as we only need to calculate it once
         self.report({'INFO'}, "Pre-calculating BVH tree for proximal object...")
-        self._prox_bvh = self.create_bvh_tree_from_object(props.proximal_object)
+        self._prox_bvh = self.create_bvh_tree(props.proximal_object)
         
         # Reset the distal mesh cache
         self._dist_meshes = {}
@@ -271,8 +254,7 @@ class COLLISION_OT_calculate(Operator):
             
             # Always use method 1: update the scene
             # Reset rotation object to original position
-            rot_obj.location = self._orig_rot_loc.copy()
-            rot_obj.rotation_euler = self._orig_rot_rotation.copy()
+            self.restore_object_transform(rot_obj, self._orig_rot_loc, self._orig_rot_rotation)
             
             # Apply rotation (converting degrees to radians)
             # The additional rotation is applied to the current rotation
@@ -361,8 +343,7 @@ class COLLISION_OT_calculate(Operator):
                             area.tag_redraw()
         
         # Always restore original position and update
-        rot_obj.location = orig_loc
-        rot_obj.rotation_euler = orig_rot
+        self.restore_object_transform(rot_obj, orig_loc, orig_rot)
         context.view_layer.update()
         
         # Check if we're done
@@ -378,8 +359,7 @@ class COLLISION_OT_calculate(Operator):
         
         # Reset rotation object to original position
         rot_obj = props.rotational_object if props.rotational_object else props.distal_object
-        rot_obj.location = self._orig_rot_loc
-        rot_obj.rotation_euler = self._orig_rot_rotation
+        self.restore_object_transform(rot_obj, self._orig_rot_loc, self._orig_rot_rotation)
         context.view_layer.update()
         
         # Clear the mesh caches to free memory
@@ -499,252 +479,4 @@ class COLLISION_OT_calculate(Operator):
         obj[f"{prefix}data"] = json.dumps(compact_data)
         
         self.report({'INFO'}, f"Stored collision data in compact format")
-    
-    # Commented out unused function: get_collision_data_from_attributes
-    '''
-    def get_collision_data_from_attributes(self, obj, prefix):
-        """Retrieve collision data from compact JSON attribute"""
-        if f"{prefix}data" not in obj:
-            return []
-        
-        # Parse the JSON data
-        compact_data = json.loads(obj[f"{prefix}data"])
-        
-        # Convert back to dictionary format
-        collision_data = []
-        for item in compact_data:
-            collision_data.append({
-                'rot_x': item[0],
-                'rot_y': item[1],
-                'rot_z': item[2],
-                'trans_x': item[3],
-                'trans_y': item[4],
-                'trans_z': item[5]
-            })
-        
-        return collision_data
-    '''
 
-    # Commented out unused function: visualize_collision_data
-    '''
-    def visualize_collision_data(self, context, obj, collision_data, prefix):
-        """Create an NLA strip for positions without collisions"""
-        self.report({'INFO'}, f"Creating animation layer for non-collision poses")
-        
-        # Get the rotational object
-        rot_obj = context.scene.collision_props.rotational_object if context.scene.collision_props.rotational_object else obj
-        
-        # Store original transformations
-        orig_rot_loc = rot_obj.location.copy()
-        orig_rot_rotation = rot_obj.rotation_euler.copy()
-        
-        # Make sure we have animation data
-        if not rot_obj.animation_data:
-            rot_obj.animation_data_create()
-        
-        # Store original action if there is one
-        original_action = rot_obj.animation_data.action
-        
-        # Create a new action with a consistent name
-        action_name = "ROM_Safe_Poses"
-        
-        # Check if the action already exists and use it if it does
-        if action_name in bpy.data.actions:
-            new_action = bpy.data.actions[action_name]
-            # Clear existing keyframes
-            for fc in new_action.fcurves:
-                new_action.fcurves.remove(fc)
-        else:
-            new_action = bpy.data.actions.new(name=action_name)
-        
-        # Set this as the active action while we create keyframes
-        rot_obj.animation_data.action = new_action
-        
-        # First, keyframe the original pose at frame 0
-        rot_obj.keyframe_insert(data_path="location", frame=0)
-        rot_obj.keyframe_insert(data_path="rotation_euler", frame=0)
-        
-        # Get all poses from our calculation
-        props = context.scene.collision_props
-        
-        # Create rotation range lists
-        rot_x_range = np.arange(props.rot_x_min, props.rot_x_max + props.rot_x_inc, props.rot_x_inc)
-        rot_y_range = np.arange(props.rot_y_min, props.rot_y_max + props.rot_y_inc, props.rot_y_inc)
-        rot_z_range = np.arange(props.rot_z_min, props.rot_z_max + props.rot_z_inc, props.rot_z_inc)
-        
-        # Create translation range lists
-        trans_x_range = np.arange(props.trans_x_min, props.trans_x_max + props.trans_x_inc, props.trans_x_inc)
-        trans_y_range = np.arange(props.trans_y_min, props.trans_y_max + props.trans_y_inc, props.trans_y_inc)
-        trans_z_range = np.arange(props.trans_z_min, props.trans_z_max + props.trans_z_inc, props.trans_z_inc)
-        
-        # Make sure we have at least one value in each range
-        if len(rot_x_range) == 0: rot_x_range = [props.rot_x_min]
-        if len(rot_y_range) == 0: rot_y_range = [props.rot_y_min]
-        if len(rot_z_range) == 0: rot_z_range = [props.rot_z_min]
-        if len(trans_x_range) == 0: trans_x_range = [props.trans_x_min]
-        if len(trans_y_range) == 0: trans_y_range = [props.trans_y_min]
-        if len(trans_z_range) == 0: trans_z_range = [props.trans_z_min]
-        
-        # Create a dictionary of collision poses for quick lookup
-        collision_poses = {}
-        for data in collision_data:
-            key = (data['rot_x'], data['rot_y'], data['rot_z'], 
-                   data['trans_x'], data['trans_y'], data['trans_z'])
-            collision_poses[key] = True
-        
-        # Create keyframes for non-collision poses
-        # Start from frame 1 since frame 0 is our original pose
-        frame = 1
-        frame_data = []
-        
-        # Start creating keyframes
-        for rot_x in rot_x_range:
-            for rot_y in rot_y_range:
-                for rot_z in rot_z_range:
-                    for trans_x in trans_x_range:
-                        for trans_y in trans_y_range:
-                            for trans_z in trans_z_range:
-                                key = (rot_x, rot_y, rot_z, trans_x, trans_y, trans_z)
-                                
-                                # If this pose has no collision, add a keyframe
-                                if key not in collision_poses:
-                                    frame_data.append({
-                                        'frame': frame,
-                                        'rot_x': rot_x,
-                                        'rot_y': rot_y,
-                                        'rot_z': rot_z,
-                                        'trans_x': trans_x,
-                                        'trans_y': trans_y,
-                                        'trans_z': trans_z
-                                    })
-                                    frame += 1
-        
-        # Now apply all the keyframes
-        for i, data in enumerate(frame_data):
-            if i % 100 == 0:
-                self.report({'INFO'}, f"Creating keyframe {i}/{len(frame_data)}")
-            
-            # Reset object to original position
-            rot_obj.location = orig_rot_loc.copy()
-            rot_obj.rotation_euler = orig_rot_rotation.copy()
-            
-            # Apply rotation (converting degrees to radians)
-            rot_euler = mathutils.Euler(
-                (math.radians(data['rot_x']), math.radians(data['rot_y']), math.radians(data['rot_z'])), 
-                'XYZ'
-            )
-            
-            # Apply rotation to the rotation object
-            rot_obj.rotation_euler.rotate(rot_euler)
-            
-            # Apply translation to the rotation object
-            rot_obj.location.x += data['trans_x']
-            rot_obj.location.y += data['trans_y']
-            rot_obj.location.z += data['trans_z']
-            
-            # Insert keyframe
-            rot_obj.keyframe_insert(data_path="location", frame=data['frame'])
-            rot_obj.keyframe_insert(data_path="rotation_euler", frame=data['frame'])
-        
-        # Add the action as an NLA strip
-        if new_action.users > 0:  # Only add if we created keyframes
-            # Check if a "ROM Safe Poses" track already exists, if yes, remove it
-            existing_track = rot_obj.animation_data.nla_tracks.get("ROM_Safe_Poses")
-            if existing_track:
-                rot_obj.animation_data.nla_tracks.remove(existing_track)
-                
-            # Create a new track with the same name as the action
-            track = rot_obj.animation_data.nla_tracks.new()
-            track.name = "ROM_Safe_Poses"
-            
-            # Create strip with the same name
-            strip = track.strips.new(name="ROM_Safe_Poses", start=0, action=new_action)
-            
-            # Configure the strip
-            strip.blend_type = 'REPLACE'
-            strip.use_auto_blend = False
-            strip.extrapolation = 'HOLD'  # Hold the last frame's pose
-            
-            # Restore or create the original animation track if there was one
-            if original_action:
-                # Check if an "Original Animation" track already exists
-                orig_track = rot_obj.animation_data.nla_tracks.get("Original_Animation")
-                if not orig_track:
-                    # Create a new track for the original animation
-                    orig_track = rot_obj.animation_data.nla_tracks.new()
-                    orig_track.name = "Original_Animation"
-                    # Add the original action as a strip
-                    orig_strip = orig_track.strips.new(name="Original_Animation", start=0, action=original_action)
-                    orig_strip.blend_type = 'REPLACE'
-                    orig_strip.extrapolation = 'HOLD'
-                
-                # Adjust which track is active based on checkbox
-                if props.visualize_collisions:
-                    # Show ROM Safe Poses, hide Original Animation
-                    track.mute = False
-                    strip.influence = 1.0
-                    orig_track.mute = True
-                    
-                    # Set as active action (visible in animation panel)
-                    rot_obj.animation_data.action = new_action
-                else:
-                    # Hide ROM Safe Poses, show Original Animation
-                    track.mute = True
-                    strip.influence = 0.0
-                    orig_track.mute = False
-                    
-                    # Set original as active action
-                    rot_obj.animation_data.action = original_action
-            else:
-                # If there was no original animation
-                if props.visualize_collisions:
-                    # Show ROM animation
-                    track.mute = False
-                    strip.influence = 1.0
-                    rot_obj.animation_data.action = new_action
-                else:
-                    # Hide ROM animation
-                    track.mute = True
-                    strip.influence = 0.0
-                    rot_obj.animation_data.action = None
-            
-            # Make sure the effect of the active strip is applied
-            if props.visualize_collisions:
-                # Set the current frame to 0 to see the original pose initially
-                context.scene.frame_set(0)
-                # Enable NLA evaluation
-                rot_obj.animation_data.use_nla = True
-                # Force an update
-                rot_obj.update_tag()
-                context.view_layer.update()
-            
-            self.report({'INFO'}, f"Created NLA strip with {len(frame_data)} non-collision poses")
-        else:
-            # If we didn't create any keyframes (all poses have collisions)
-            self.report({'WARNING'}, "No collision-free poses found to create animation")
-            
-            # Restore original action if there was one
-            rot_obj.animation_data.action = original_action
-        
-        # Reset object to original position
-        rot_obj.location = orig_rot_loc
-        rot_obj.rotation_euler = orig_rot_rotation
-    '''
-
-    # Commented out unused function: make_collection_visible
-    '''
-    def make_collection_visible(self, layer_collection, target_name):
-        """Recursively make a collection visible"""
-        if layer_collection.name == target_name:
-            layer_collection.hide_viewport = False
-            return True
-        
-        for child in layer_collection.children:
-            if self.make_collection_visible(child, target_name):
-                layer_collection.hide_viewport = False
-                return True
-        
-        return False
-    '''
-    
-# ...existing code...
