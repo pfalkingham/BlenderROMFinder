@@ -288,7 +288,7 @@ class COLLISION_OT_calculate(Operator):
             absolute_rot_y = math.degrees(absolute_rot_y)
             absolute_rot_z = math.degrees(absolute_rot_z)
             
-            self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 1 if collision else 0])
+            self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 0 if collision else 1]) #Changed so that 0 is collision and 1 is valid pose.
             
             # If pose is collision-free, insert keyframes immediately
             if not collision:
