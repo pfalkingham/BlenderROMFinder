@@ -206,7 +206,7 @@ class CollisionProperties(PropertyGroup):
     batch_size: IntProperty(
         name="Batch Size",
         description="Number of iterations to process per update (higher values = faster but less responsive UI)",
-        default=100,
+        default=10,
         min=10,
         max=5000
     )

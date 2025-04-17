@@ -195,6 +195,16 @@ class COLLISION_OT_calculate(Operator):
             self.report({'INFO'}, f"Starting from rotation: {[math.degrees(r) for r in self._orig_rot_rotation]}")
             self.report({'INFO'}, f"Starting from location: {self._orig_rot_loc}")
         
+        # Keyframe the starting position at frame 0
+        if use_bone:
+            pose_bone = rot_obj.pose.bones.get(bone_name)
+            if pose_bone:
+                pose_bone.keyframe_insert(data_path="location", frame=0)
+                pose_bone.keyframe_insert(data_path="rotation_euler", frame=0)
+        else:
+            rot_obj.keyframe_insert(data_path="location", frame=0)
+            rot_obj.keyframe_insert(data_path="rotation_euler", frame=0)
+        
         # Create rotation range lists - these are RELATIVE to the current rotation
         self._rot_x_range = np.arange(props.rot_x_min, props.rot_x_max + props.rot_x_inc, props.rot_x_inc).tolist()
         self._rot_y_range = np.arange(props.rot_y_min, props.rot_y_max + props.rot_y_inc, props.rot_y_inc).tolist()
@@ -482,6 +492,12 @@ class COLLISION_OT_calculate(Operator):
             # Removed separate keyframe operator call.
             self.report({'INFO'}, f"Inserted {self._non_collision_frame-1} keyframes on collision-free poses")
         
+        # Output total time taken
+        if self._start_time:
+            elapsed = time.time() - self._start_time
+            mins, secs = divmod(int(elapsed), 60)
+            self.report({'INFO'}, f"Total time taken: {mins:02d}:{secs:02d}")
+        
         # Reset calculation state
         props.is_calculating = False
         props.calculation_progress = 0.0
@@ -527,6 +543,10 @@ class COLLISION_OT_calculate(Operator):
         if props.is_calculating:
             self.report({'WARNING'}, "A calculation is already in progress")
             return {'CANCELLED'}
+            
+        # Ensure we are in Object Mode before starting calculations
+        if bpy.ops.object.mode_set.poll():
+            bpy.ops.object.mode_set(mode='OBJECT')
             
         # Initialize the calculation
         if not self.initialize_calculation(context):
