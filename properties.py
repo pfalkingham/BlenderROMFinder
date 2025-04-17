@@ -29,6 +29,19 @@ class CollisionProperties(PropertyGroup):
         description="Select the object to use as the rotation center",
         type=bpy.types.Object
     )
+
+    def update_rotational_bone(self, context):
+        # Called when rotational_object changes, to update the bone list
+        if self.rotational_object and self.rotational_object.type == 'ARMATURE':
+            armature = self.rotational_object.data
+            return [(bone.name, bone.name, "") for bone in armature.bones]
+        return []
+
+    rotational_bone: EnumProperty(
+        name="Rotational Bone",
+        description="Select the bone to use as the rotation center (if armature)",
+        items=lambda self, context: self.update_rotational_bone(context),
+    )
     
     # Rotation parameters
     rot_x_min: FloatProperty(

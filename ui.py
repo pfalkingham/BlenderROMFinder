@@ -38,6 +38,9 @@ class COLLISION_PT_panel(Panel):
         box.prop(props, "proximal_object")
         box.prop(props, "distal_object")
         box.prop(props, "rotational_object")
+        # Show bone dropdown if rotational_object is an armature
+        if props.rotational_object and props.rotational_object.type == 'ARMATURE':
+            box.prop(props, "rotational_bone")
         
         # Rotation parameters
         box = layout.box()

@@ -127,6 +127,15 @@ class COLLISION_OT_calculate(Operator):
         # If any overlap is found, return True
         return len(overlap_pairs) > 0
     
+    def get_bone_world_matrix(self, armature_obj, bone_name):
+        # Get the world matrix of the specified bone in the armature
+        if armature_obj and armature_obj.type == 'ARMATURE' and bone_name:
+            # Use pose bone for current transform
+            pose_bone = armature_obj.pose.bones.get(bone_name)
+            if pose_bone:
+                return armature_obj.matrix_world @ pose_bone.matrix
+        return None
+
     def initialize_calculation(self, context):
         """Set up calculation parameters and state"""
         props = context.scene.collision_props
@@ -140,13 +149,24 @@ class COLLISION_OT_calculate(Operator):
         prox_obj = props.proximal_object
         dist_obj = props.distal_object
         rot_obj = props.rotational_object if props.rotational_object else dist_obj
+        use_bone = False
+        bone_matrix = None
+        bone_name = getattr(props, 'rotational_bone', None)
+        if rot_obj and rot_obj.type == 'ARMATURE' and bone_name:
+            bone_matrix = self.get_bone_world_matrix(rot_obj, bone_name)
+            use_bone = bone_matrix is not None
         
         # Store original transformations - this is our reference point
-        self._orig_rot_loc = rot_obj.location.copy()
-        self._orig_rot_rotation = rot_obj.rotation_euler.copy()
-        
-        self.report({'INFO'}, f"Starting from rotation: {[math.degrees(r) for r in self._orig_rot_rotation]}")
-        self.report({'INFO'}, f"Starting from location: {self._orig_rot_loc}")
+        if use_bone:
+            self._orig_bone_matrix = bone_matrix.copy()
+            self._orig_rot_loc = None
+            self._orig_rot_rotation = None
+            self.report({'INFO'}, f"Using bone '{bone_name}' as pivot.")
+        else:
+            self._orig_rot_loc = rot_obj.location.copy()
+            self._orig_rot_rotation = rot_obj.rotation_euler.copy()
+            self.report({'INFO'}, f"Starting from rotation: {[math.degrees(r) for r in self._orig_rot_rotation]}")
+            self.report({'INFO'}, f"Starting from location: {self._orig_rot_loc}")
         
         # Create rotation range lists - these are RELATIVE to the current rotation
         self._rot_x_range = np.arange(props.rot_x_min, props.rot_x_max + props.rot_x_inc, props.rot_x_inc).tolist()
@@ -224,6 +244,8 @@ class COLLISION_OT_calculate(Operator):
         prox_obj = props.proximal_object
         dist_obj = props.distal_object
         rot_obj = props.rotational_object if props.rotational_object else dist_obj
+        bone_name = getattr(props, 'rotational_bone', None)
+        use_bone = rot_obj and rot_obj.type == 'ARMATURE' and bone_name
         
         # Store original transformations for restoration at end if using scene updates
         orig_loc = rot_obj.location.copy()
@@ -252,49 +274,69 @@ class COLLISION_OT_calculate(Operator):
             trans_y = self._trans_y_range[self._cur_ty_idx]
             trans_z = self._trans_z_range[self._cur_tz_idx]
             
-            # Always use method 1: update the scene
-            # Reset rotation object to original position
-            self.restore_object_transform(rot_obj, self._orig_rot_loc, self._orig_rot_rotation)
-            
-            # Apply rotation (converting degrees to radians)
-            # The additional rotation is applied to the current rotation
-            rot_euler = mathutils.Euler(
-                (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)),
-                props.rot_order  # use selected rotation order
-            )
-            
-            # Apply rotation to the rotation object
-            rot_obj.rotation_euler.rotate(rot_euler)
-            
-            # Apply translation to the rotation object
-            rot_obj.location.x += trans_x
-            rot_obj.location.y += trans_y
-            rot_obj.location.z += trans_z
-            
-            # Update the scene (expensive operation)
-            context.view_layer.update()
+            if use_bone:
+                # Reset bone to original matrix (approximate, as Blender doesn't allow direct set)
+                pose_bone = rot_obj.pose.bones.get(bone_name)
+                if pose_bone:
+                    # Calculate relative rotation
+                    rot_euler = mathutils.Euler((math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), props.rot_order)
+                    pose_bone.rotation_mode = props.rot_order
+                    pose_bone.rotation_euler = rot_euler
+                    # Optionally, apply translation to bone head (not common in Blender, but can be done via location)
+                    pose_bone.location = mathutils.Vector((trans_x, trans_y, trans_z))
+                    context.view_layer.update()
+            else:
+                # Always use method 1: update the scene
+                # Reset rotation object to original position
+                self.restore_object_transform(rot_obj, orig_loc, orig_rot)
+                
+                # Apply rotation (converting degrees to radians)
+                # The additional rotation is applied to the current rotation
+                rot_euler = mathutils.Euler(
+                    (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)),
+                    props.rot_order  # use selected rotation order
+                )
+                
+                # Apply rotation to the rotation object
+                rot_obj.rotation_euler.rotate(rot_euler)
+                
+                # Apply translation to the rotation object
+                rot_obj.location.x += trans_x
+                rot_obj.location.y += trans_y
+                rot_obj.location.z += trans_z
+                
+                # Update the scene (expensive operation)
+                context.view_layer.update()
             
             # Check for collision using the pre-calculated proximal BVH tree
             collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
             
             # Record data
             # Calculate absolute rotations for clarity
-            absolute_rot_x = self._orig_rot_rotation.x + math.radians(rot_x)
-            absolute_rot_y = self._orig_rot_rotation.y + math.radians(rot_y)
-            absolute_rot_z = self._orig_rot_rotation.z + math.radians(rot_z)
-            
-            # Convert back to degrees for storage
-            absolute_rot_x = math.degrees(absolute_rot_x)
-            absolute_rot_y = math.degrees(absolute_rot_y)
-            absolute_rot_z = math.degrees(absolute_rot_z)
+            if self._orig_rot_rotation is not None:
+                absolute_rot_x = self._orig_rot_rotation.x + math.radians(rot_x)
+                absolute_rot_y = self._orig_rot_rotation.y + math.radians(rot_y)
+                absolute_rot_z = self._orig_rot_rotation.z + math.radians(rot_z)
+                # Convert back to degrees for storage
+                absolute_rot_x = math.degrees(absolute_rot_x)
+                absolute_rot_y = math.degrees(absolute_rot_y)
+                absolute_rot_z = math.degrees(absolute_rot_z)
+            else:
+                absolute_rot_x = None
+                absolute_rot_y = None
+                absolute_rot_z = None
             
             self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 0 if collision else 1]) #Changed so that 0 is collision and 1 is valid pose.
             
             # If pose is collision-free, insert keyframes immediately
             if not collision:
                 if props.visualize_collisions:
-                    rot_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
-                    rot_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
+                    if use_bone and pose_bone:
+                        pose_bone.keyframe_insert(data_path="location", frame=self._non_collision_frame)
+                        pose_bone.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
+                    else:
+                        rot_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
+                        rot_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
                 self._non_collision_frame += 1
             
             # Increment indices using more efficient approach
@@ -343,8 +385,14 @@ class COLLISION_OT_calculate(Operator):
                             area.tag_redraw()
         
         # Always restore original position and update
-        self.restore_object_transform(rot_obj, orig_loc, orig_rot)
-        context.view_layer.update()
+        if use_bone and pose_bone:
+            # Reset bone transform
+            pose_bone.location = mathutils.Vector((0,0,0))
+            pose_bone.rotation_euler = mathutils.Euler((0,0,0), props.rot_order)
+            context.view_layer.update()
+        else:
+            self.restore_object_transform(rot_obj, orig_loc, orig_rot)
+            context.view_layer.update()
         
         # Check if we're done
         if self._is_finished:
@@ -359,8 +407,17 @@ class COLLISION_OT_calculate(Operator):
         
         # Reset rotation object to original position
         rot_obj = props.rotational_object if props.rotational_object else props.distal_object
-        self.restore_object_transform(rot_obj, self._orig_rot_loc, self._orig_rot_rotation)
-        context.view_layer.update()
+        bone_name = getattr(props, 'rotational_bone', None)
+        use_bone = rot_obj and rot_obj.type == 'ARMATURE' and bone_name
+        if use_bone:
+            pose_bone = rot_obj.pose.bones.get(bone_name)
+            if pose_bone:
+                pose_bone.location = mathutils.Vector((0,0,0))
+                pose_bone.rotation_euler = mathutils.Euler((0,0,0), props.rot_order)
+                context.view_layer.update()
+        elif self._orig_rot_loc is not None and self._orig_rot_rotation is not None:
+            self.restore_object_transform(rot_obj, self._orig_rot_loc, self._orig_rot_rotation)
+            context.view_layer.update()
         
         # Clear the mesh caches to free memory
         self._dist_meshes = {}
