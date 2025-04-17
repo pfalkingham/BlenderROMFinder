@@ -1,9 +1,11 @@
 import bpy
 from bpy.types import Panel
+# Import bl_info from __init__.py
+from . import bl_info
 
 class COLLISION_PT_panel(Panel):
     """Creates a panel in the 3D View sidebar"""
-    bl_label = "Range of Motion Finder"
+    bl_label = "Range of Motion Finder"  # We'll override this in draw
     bl_idname = "COLLISION_PT_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -12,6 +14,11 @@ class COLLISION_PT_panel(Panel):
     def draw(self, context):
         layout = self.layout
         props = context.scene.collision_props
+
+        # Show version at the top
+        version = bl_info.get("version", ("?",))
+        version_str = ".".join(str(v) for v in version)
+        layout.label(text=f"Range of Motion Finder v{version_str}", icon='PLUGIN')
         
         # Check if calculation is in progress
         if props.is_calculating:

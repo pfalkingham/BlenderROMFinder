@@ -79,20 +79,47 @@ class COLLISION_OT_calculate(Operator):
         obj.to_mesh_clear()
         return bvh
 
+    def create_convex_hull_object(self, obj):
+        """Create a temporary convex hull mesh object from the given object."""
+        # Duplicate the object and enter edit mode
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.duplicate()
+        hull_obj = bpy.context.active_object
+        # Enter edit mode and create convex hull
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.convex_hull()
+        bpy.ops.object.mode_set(mode='OBJECT')
+        return hull_obj
+
+    def remove_temp_object(self, obj):
+        bpy.data.objects.remove(obj, do_unlink=True)
+
     def restore_object_transform(self, obj, location, rotation):
         """Restore the object's location and rotation."""
         obj.location = location.copy()
         obj.rotation_euler = rotation.copy()
 
     def check_collision(self, prox_obj, dist_obj, prox_bvh=None, transform_matrix=None):
-        """Use BVH trees to check for collision between two objects
-        
-        Args:
-            prox_obj: The proximal (fixed) object
-            dist_obj: The distal (moving) object
-            prox_bvh: Optional pre-calculated BVH tree for the proximal object
-            transform_matrix: The transformation matrix for the distal object
-        """
+        """Use BVH trees to check for collision between two objects, with convex hull optimization."""
+        # Create convex hulls for both objects (if not already cached)
+        if not hasattr(self, '_prox_hull_obj'):
+            self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
+        if not hasattr(self, '_dist_hull_obj'):
+            self._dist_hull_obj = self.create_convex_hull_object(dist_obj)
+        # Apply transform to distal hull if needed
+        if transform_matrix is not None:
+            self._dist_hull_obj.matrix_world = transform_matrix
+        # Create BVH trees for convex hulls
+        prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
+        dist_hull_bvh = self.create_bvh_tree(self._dist_hull_obj)
+        # Check for overlap between convex hulls
+        hull_overlap = prox_hull_bvh.overlap(dist_hull_bvh)
+        if not hull_overlap:
+            return False
+        # If convex hulls overlap, check original meshes (as before)
         props = bpy.context.scene.collision_props
         
         # Create BVH tree for proximal object if not provided
@@ -422,6 +449,14 @@ class COLLISION_OT_calculate(Operator):
         # Clear the mesh caches to free memory
         self._dist_meshes = {}
         
+        # Remove temporary convex hull objects if they exist
+        if hasattr(self, '_prox_hull_obj'):
+            self.remove_temp_object(self._prox_hull_obj)
+            del self._prox_hull_obj
+        if hasattr(self, '_dist_hull_obj'):
+            self.remove_temp_object(self._dist_hull_obj)
+            del self._dist_hull_obj
+
         if not cancelled:
             # Export CSV
             if props.export_to_csv and props.export_path:
