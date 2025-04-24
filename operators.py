@@ -228,7 +228,7 @@ class COLLISION_OT_calculate(Operator):
                            len(self._trans_x_range) * len(self._trans_y_range) * len(self._trans_z_range)
         
         # Prepare CSV data
-        self._csv_data = [["rot_x", "rot_y", "rot_z", "trans_x", "trans_y", "trans_z", "collision"]]
+        self._csv_data = [["rot_x", "rot_y", "rot_z", "trans_x", "trans_y", "trans_z", "Valid_pose"]]
         
         # Prepare data for object attributes if enabled
         self._collision_data = []
@@ -324,24 +324,23 @@ class COLLISION_OT_calculate(Operator):
                     context.view_layer.update()
             else:
                 # Always use method 1: update the scene
-                # Reset rotation object to original position
-                self.restore_object_transform(rot_obj, orig_loc, orig_rot)
-                
-                # Apply rotation (converting degrees to radians)
-                # The additional rotation is applied to the current rotation
-                rot_euler = mathutils.Euler(
+                # Reset rotation object to original position - Location is still relative
+                rot_obj.location = self._orig_rot_loc + mathutils.Vector((trans_x, trans_y, trans_z))
+
+                # Calculate the target absolute rotation
+                # Start from the original rotation
+                target_rotation = self._orig_rot_rotation.copy()
+                # Create the delta rotation Euler
+                delta_rot_euler = mathutils.Euler(
                     (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)),
                     props.rot_order  # use selected rotation order
                 )
-                
-                # Apply rotation to the rotation object
-                rot_obj.rotation_euler.rotate(rot_euler)
-                
-                # Apply translation to the rotation object
-                rot_obj.location.x += trans_x
-                rot_obj.location.y += trans_y
-                rot_obj.location.z += trans_z
-                
+                # Apply the delta rotation to the original rotation
+                target_rotation.rotate(delta_rot_euler)
+
+                # Set the object's rotation directly to the target absolute rotation
+                rot_obj.rotation_euler = target_rotation
+
                 # Update the scene (expensive operation)
                 context.view_layer.update()
             
