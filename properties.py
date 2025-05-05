@@ -64,7 +64,7 @@ class CollisionProperties(PropertyGroup):
         name="X Inc",
         description="X rotation increment in degrees",
         default=5.0,
-        min=0.1,
+        min=0.01,
         max=90.0
     )
     
@@ -88,7 +88,7 @@ class CollisionProperties(PropertyGroup):
         name="Y Inc",
         description="Y rotation increment in degrees",
         default=5.0,
-        min=0.1,
+        min=0.01,
         max=90.0
     )
     
@@ -112,7 +112,7 @@ class CollisionProperties(PropertyGroup):
         name="Z Inc",
         description="Z rotation increment in degrees",
         default=5.0,
-        min=0.1,
+        min=0.01,
         max=90.0
     )
     
@@ -151,8 +151,9 @@ class CollisionProperties(PropertyGroup):
         name="X Inc",
         description="X translation increment",
         default=0.1,
-        min=0.01,
-        max=10.0
+        min=0.001,
+        max=10.0,
+        precision=4
     )
     
     trans_y_min: FloatProperty(
@@ -175,8 +176,9 @@ class CollisionProperties(PropertyGroup):
         name="Y Inc",
         description="Y translation increment",
         default=0.1,
-        min=0.01,
-        max=10.0
+        min=0.001,
+        max=10.0,
+        precision=4
     )
     
     trans_z_min: FloatProperty(
@@ -199,8 +201,9 @@ class CollisionProperties(PropertyGroup):
         name="Z Inc",
         description="Z translation increment",
         default=0.1,
-        min=0.01,
-        max=10.0
+        min=0.001,
+        max=10.0,
+        precision=4
     )
     
     batch_size: IntProperty(
