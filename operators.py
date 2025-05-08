@@ -52,6 +52,12 @@ class COLLISION_OT_calculate(Operator):
     _prox_bvh = None
     _orig_rot_loc = None
     _orig_rot_rotation = None
+    _orig_bone_matrix_local = None
+    
+    # Cached proximal hull object and its BVH tree
+    _prox_hull_obj = None 
+    _prox_hull_bvh = None
+    
     _cur_x_idx = 0
     _cur_y_idx = 0
     _cur_z_idx = 0
@@ -102,58 +108,71 @@ class COLLISION_OT_calculate(Operator):
         obj.location = location.copy()
         obj.rotation_euler = rotation.copy()
 
-    def check_collision(self, prox_obj, dist_obj, prox_bvh=None, transform_matrix=None):
-        """Use BVH trees to check for collision between two objects, with convex hull optimization."""
-        # Create convex hulls for both objects (if not already cached)
-        if not hasattr(self, '_prox_hull_obj'):
-            self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
-        if not hasattr(self, '_dist_hull_obj'):
-            self._dist_hull_obj = self.create_convex_hull_object(dist_obj)
-        # Apply transform to distal hull if needed
-        if transform_matrix is not None:
-            self._dist_hull_obj.matrix_world = transform_matrix
-        # Create BVH trees for convex hulls
-        prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
-        dist_hull_bvh = self.create_bvh_tree(self._dist_hull_obj)
-        # Check for overlap between convex hulls
-        hull_overlap = prox_hull_bvh.overlap(dist_hull_bvh)
-        if not hull_overlap:
-            return False
-        # If convex hulls overlap, check original meshes (as before)
-        props = bpy.context.scene.collision_props
+    def check_collision(self, prox_obj, dist_obj, prox_bvh_original_mesh=None, transform_matrix=None):
+        """Use BVH trees to check for collision between two objects, with optional convex hull optimization."""
+        props = bpy.context.scene.collision_props # Get access to properties
+
+        if props.use_convex_hull_optimization:
+            # 1. Proximal Hull (cached Blender object and its BVH)
+            if self._prox_hull_obj is None:
+                self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
+            
+            if self._prox_hull_bvh is None:
+                if self._prox_hull_obj:
+                    self._prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
+                else:
+                    # Fall through to original mesh check if hull creation fails
+                    pass 
+
+            if not self._prox_hull_bvh:
+                # Fall through to original mesh check
+                pass 
+            else:
+                # 2. Distal Hull (temporary Blender object and its BVH for current pose)
+                temp_dist_hull_obj = self.create_convex_hull_object(dist_obj)
+                if not temp_dist_hull_obj:
+                    # Fall through to original mesh check
+                    pass 
+                else:
+                    current_dist_hull_bvh = self.create_bvh_tree(temp_dist_hull_obj)
+                    
+                    if temp_dist_hull_obj.name in bpy.data.objects:
+                        self.remove_temp_object(temp_dist_hull_obj)
+                    temp_dist_hull_obj = None
+
+                    if not current_dist_hull_bvh:
+                        # Fall through to original mesh check
+                        pass 
+                    else:
+                        # 3. Hull Check
+                        hull_overlap_pairs = self._prox_hull_bvh.overlap(current_dist_hull_bvh)
+                        if not hull_overlap_pairs:
+                            return False # No collision if hulls don't overlap (potential containment missed)
         
-        # Create BVH tree for proximal object if not provided
-        if prox_bvh is None:
-            prox_bvh = self.create_bvh_tree(prox_obj)
-        
-        # Create a transform key for caching
+        # 4. Original Mesh Check (if hulls overlapped, hull check was skipped, or optimization is off)
+        dist_bvh_original_mesh = None
         transform_key = None
         if transform_matrix is not None:
-            # Create a hashable key from the matrix values
             transform_key = tuple(tuple(row) for row in transform_matrix)
         
-        # Try to use cached BVH tree for distal object if available
         if transform_key and transform_key in self._dist_meshes:
-            dist_bvh = self._dist_meshes[transform_key]
+            dist_bvh_original_mesh = self._dist_meshes[transform_key]
         else:
-            # Create a new BVH tree for distal object
-            dist_bvh = self.create_bvh_tree(dist_obj, transform_matrix)
-            
-            # Cache this BVH tree
-            if transform_key:
-                # Limit cache size by removing oldest entries if too many
-                if len(self._dist_meshes) > 50:  # Only keep the 50 most recent transformations
+            dist_bvh_original_mesh = self.create_bvh_tree(dist_obj, transform_matrix)
+            if transform_key and dist_bvh_original_mesh:
+                if len(self._dist_meshes) > 50: # Cache limit
                     oldest_key = next(iter(self._dist_meshes))
                     del self._dist_meshes[oldest_key]
-                self._dist_meshes[transform_key] = dist_bvh
+                self._dist_meshes[transform_key] = dist_bvh_original_mesh
         
-        # Check for overlap between the two BVH trees
-        # The overlap method returns a list of overlapping pairs
-        overlap_pairs = prox_bvh.overlap(dist_bvh)
+        if not prox_bvh_original_mesh or not dist_bvh_original_mesh:
+            self.report({'ERROR'}, "BVH for original mesh check not available.")
+            return True # Fail safe
+
+        original_mesh_overlap_pairs = prox_bvh_original_mesh.overlap(dist_bvh_original_mesh)
         
-        # If any overlap is found, return True
-        return len(overlap_pairs) > 0
-    
+        return len(original_mesh_overlap_pairs) > 0
+
     def get_bone_world_matrix(self, armature_obj, bone_name):
         # Get the world matrix of the specified bone in the armature
         if armature_obj and armature_obj.type == 'ARMATURE' and bone_name:
@@ -240,6 +259,13 @@ class COLLISION_OT_calculate(Operator):
         # This is a major optimization as we only need to calculate it once
         self.report({'INFO'}, "Pre-calculating BVH tree for proximal object...")
         self._prox_bvh = self.create_bvh_tree(props.proximal_object)
+        
+        # Ensure cached hull attributes are reset for a new calculation run
+        if hasattr(self, '_prox_hull_obj') and self._prox_hull_obj:
+            if self._prox_hull_obj.name in bpy.data.objects: # Check if it still exists
+                self.remove_temp_object(self._prox_hull_obj)
+        self._prox_hull_obj = None
+        self._prox_hull_bvh = None # BVH trees are just Python objects, no Blender data to remove directly
         
         # Reset the distal mesh cache
         self._dist_meshes = {}
@@ -458,13 +484,13 @@ class COLLISION_OT_calculate(Operator):
         # Clear the mesh caches to free memory
         self._dist_meshes = {}
         
-        # Remove temporary convex hull objects if they exist
-        if hasattr(self, '_prox_hull_obj'):
-            self.remove_temp_object(self._prox_hull_obj)
-            del self._prox_hull_obj
-        if hasattr(self, '_dist_hull_obj'):
-            self.remove_temp_object(self._dist_hull_obj)
-            del self._dist_hull_obj
+        # Clean up the cached proximal hull object and its BVH
+        if hasattr(self, '_prox_hull_obj') and self._prox_hull_obj:
+            if self._prox_hull_obj.name in bpy.data.objects: # Check if it still exists
+                self.remove_temp_object(self._prox_hull_obj)
+            self._prox_hull_obj = None
+        # BVH trees are Python objects; they are garbage collected. No specific Blender data to remove for _prox_hull_bvh itself.
+        self._prox_hull_bvh = None 
 
         if not cancelled:
             # Export CSV

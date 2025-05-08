@@ -140,6 +140,9 @@ class COLLISION_PT_panel(Panel):
         # Batch size
         box.prop(props, "batch_size")
         
+        # Add checkbox for convex hull optimization
+        box.prop(props, "use_convex_hull_optimization")
+        
         # Calculate button - place this OUTSIDE any box
         row = layout.row(align=True)
         row.scale_y = 1.5

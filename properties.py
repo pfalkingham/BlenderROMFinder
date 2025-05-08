@@ -203,6 +203,12 @@ class CollisionProperties(PropertyGroup):
         max=10.0
     )
     
+    use_convex_hull_optimization: BoolProperty(
+        name="Use Convex Hull Pre-Check",
+        description="Enable to use a faster convex hull pre-check. WARNING: May give incorrect non-collision results if one object can be fully contained within the other. Disable for full accuracy in such cases.",
+        default=False  # Off by default
+    )
+    
     batch_size: IntProperty(
         name="Batch Size",
         description="Number of iterations to process per update (higher values = faster but less responsive UI)",
