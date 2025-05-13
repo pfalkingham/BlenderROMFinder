@@ -338,36 +338,31 @@ class COLLISION_OT_calculate(Operator):
             trans_z = self._trans_z_range[self._cur_tz_idx]
             
             if use_bone:
-                # Reset bone to original matrix (approximate, as Blender doesn't allow direct set)
                 pose_bone = rot_obj.pose.bones.get(bone_name)
                 if pose_bone:
-                    # Calculate relative rotation
-                    rot_euler = mathutils.Euler((math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)), props.rot_order)
+                    # Set absolute rotation relative to initial pose
                     pose_bone.rotation_mode = props.rot_order
-                    pose_bone.rotation_euler = rot_euler
-                    # Optionally, apply translation to bone head (not common in Blender, but can be done via location)
+                    pose_bone.rotation_euler = mathutils.Euler(
+                        (
+                            self._orig_bone_matrix.to_euler(props.rot_order).x + math.radians(rot_x),
+                            self._orig_bone_matrix.to_euler(props.rot_order).y + math.radians(rot_y),
+                            self._orig_bone_matrix.to_euler(props.rot_order).z + math.radians(rot_z)
+                        ),
+                        props.rot_order
+                    )
                     pose_bone.location = mathutils.Vector((trans_x, trans_y, trans_z))
                     context.view_layer.update()
             else:
-                # Always use method 1: update the scene
-                # Reset rotation object to original position - Location is still relative
-                rot_obj.location = self._orig_rot_loc + mathutils.Vector((trans_x, trans_y, trans_z))
-
-                # Calculate the target absolute rotation
-                # Start from the original rotation
-                target_rotation = self._orig_rot_rotation.copy()
-                # Create the delta rotation Euler
-                delta_rot_euler = mathutils.Euler(
-                    (math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)),
-                    props.rot_order  # use selected rotation order
+                rot_obj.rotation_mode = props.rot_order
+                rot_obj.rotation_euler = mathutils.Euler(
+                    (
+                        self._orig_rot_rotation.x + math.radians(rot_x),
+                        self._orig_rot_rotation.y + math.radians(rot_y),
+                        self._orig_rot_rotation.z + math.radians(rot_z)
+                    ),
+                    props.rot_order
                 )
-                # Apply the delta rotation to the original rotation
-                target_rotation.rotate(delta_rot_euler)
-
-                # Set the object's rotation directly to the target absolute rotation
-                rot_obj.rotation_euler = target_rotation
-
-                # Update the scene (expensive operation)
+                rot_obj.location = self._orig_rot_loc + mathutils.Vector((trans_x, trans_y, trans_z))
                 context.view_layer.update()
             
             # Check for collision using the pre-calculated proximal BVH tree
