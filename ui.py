@@ -119,19 +119,11 @@ class COLLISION_PT_panel(Panel):
         if props.export_to_csv:
             box.prop(props, "export_path")
         
-        # Attribute storage options
-        box.prop(props, "store_as_attributes")
-        
-        if props.store_as_attributes:
-            row = box.row()
-            row.prop(props, "attribute_name_prefix")
-            row = box.row()
-            row.prop(props, "visualize_collisions")
-            
-            # Add info text about NLA editor if visualization is enabled
-            if props.visualize_collisions:
-                info_row = box.row()
-                info_row.label(text="Check NLA Editor to see animations", icon='INFO')
+        # Animation layer (visualization) option - always show
+        box.prop(props, "visualize_collisions")
+        if props.visualize_collisions:
+            info_row = box.row()
+            info_row.label(text="Check NLA Editor to see animations", icon='INFO')
         
         # Performance options - keep this as a SEPARATE box
         box = layout.box()

@@ -255,20 +255,8 @@ class CollisionProperties(PropertyGroup):
         subtype='FILE_PATH'
     )
     
-    store_as_attributes: BoolProperty(
-        name="Store as Attributes",
-        description="Store collision data as attributes on the distal object",
-        default=True
-    )
-    
     visualize_collisions: BoolProperty(
         name="Show Animation Layer",
         description="Create an NLA animation layer with non-colliding poses and make it visible",
         default=True
-    )
-    
-    attribute_name_prefix: StringProperty(
-        name="Attribute Prefix",
-        description="Prefix for the attribute names",
-        default="collision_"
     )

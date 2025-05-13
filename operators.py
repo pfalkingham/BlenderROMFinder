@@ -503,12 +503,6 @@ class COLLISION_OT_calculate(Operator):
                 
                 self.report({'INFO'}, f"Collision data exported to {filepath}")
             
-            # Only store the collision data as an attribute if enabled in the UI
-            if props.store_as_attributes and props.attribute_name_prefix:
-                collision_data = self._csv_data[1:]
-                self.store_collision_data_as_attributes(context, rot_obj, collision_data, props.attribute_name_prefix)
-            
-
             # Removed separate keyframe operator call.
             self.report({'INFO'}, f"Inserted {self._non_collision_frame-1} keyframes on collision-free poses")
         
@@ -590,25 +584,4 @@ class COLLISION_OT_calculate(Operator):
         # call finalize to clean up
         if self._is_initialized and not self._is_finished:
             self.finalize_calculation(context, cancelled=True)
-    
-    def store_collision_data_as_attributes(self, context, obj, collision_data, prefix):
-        """Store collision data as compact JSON in a single attribute"""
-        # First, clear any existing collision attributes
-        for attr_name in list(obj.keys()):
-            if attr_name.startswith(prefix):
-                del obj[attr_name]
-        
-        # Store the collision count
-        obj[f"{prefix}count"] = len(collision_data)
-        
-        # Prepare a compact representation of collision data.
-        # Each row is expected to be: [rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, collision]
-        # Here we store only the pose data (first six values). Adjust if needed.
-        compact_data = [ row[:6] for row in collision_data ]
-        
-        
-        # Store as JSON string in a single attribute
-        obj[f"{prefix}data"] = json.dumps(compact_data)
-        
-        self.report({'INFO'}, f"Stored collision data in compact format")
 
