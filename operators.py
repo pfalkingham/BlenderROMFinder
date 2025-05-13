@@ -66,9 +66,6 @@ class COLLISION_OT_calculate(Operator):
     _cur_tz_idx = 0
     
     # Additional optimization variables
-    _prox_mesh = None
-    _dist_meshes = {}  # Cache for distal object transformed meshes
-    _last_transform_key = None  # Track the last transformation to avoid redundant BVH creation
     _start_time = None
     
     def create_bvh_tree(self, obj, transform_matrix=None):
@@ -150,23 +147,11 @@ class COLLISION_OT_calculate(Operator):
                             return False # No collision if hulls don't overlap (potential containment missed)
         
         # 4. Original Mesh Check (if hulls overlapped, hull check was skipped, or optimization is off)
-        dist_bvh_original_mesh = None
-        transform_key = None
-        if transform_matrix is not None:
-            transform_key = tuple(tuple(row) for row in transform_matrix)
-        
-        if transform_key and transform_key in self._dist_meshes:
-            dist_bvh_original_mesh = self._dist_meshes[transform_key]
-        else:
-            dist_bvh_original_mesh = self.create_bvh_tree(dist_obj, transform_matrix)
-            if transform_key and dist_bvh_original_mesh:
-                if len(self._dist_meshes) > 50: # Cache limit
-                    oldest_key = next(iter(self._dist_meshes))
-                    del self._dist_meshes[oldest_key]
-                self._dist_meshes[transform_key] = dist_bvh_original_mesh
+        # BVH for distal object is created directly as poses are unique (or caching is removed)
+        dist_bvh_original_mesh = self.create_bvh_tree(dist_obj, transform_matrix)
         
         if not prox_bvh_original_mesh or not dist_bvh_original_mesh:
-            self.report({'ERROR'}, "BVH for original mesh check not available.")
+            self.report({'ERROR'}, "BVH for original mesh check not available. Proximal or Distal BVH failed.")
             return True # Fail safe
 
         original_mesh_overlap_pairs = prox_bvh_original_mesh.overlap(dist_bvh_original_mesh)
@@ -258,7 +243,34 @@ class COLLISION_OT_calculate(Operator):
         # Pre-calculate the BVH tree for the proximal object (which doesn't move)
         # This is a major optimization as we only need to calculate it once
         self.report({'INFO'}, "Pre-calculating BVH tree for proximal object...")
-        self._prox_bvh = self.create_bvh_tree(props.proximal_object)
+        if prox_obj:
+            self._prox_bvh = self.create_bvh_tree(prox_obj) # Use the main prox_obj for its own BVH
+            if not self._prox_bvh:
+                self.report({'ERROR'}, "Failed to create BVH tree for proximal object. Aborting calculation.")
+                props.is_calculating = False
+                self._is_initialized = False 
+                return # Exit initialize_calculation early
+        else:
+            self.report({'ERROR'}, "Proximal object not set. Aborting calculation.")
+            props.is_calculating = False
+            self._is_initialized = False
+            return # Exit initialize_calculation early
+        
+        # Initialize proximal hull and its BVH if optimization is enabled
+        if props.use_convex_hull_optimization:
+            self.report({'INFO'}, "Pre-calculating convex hull and BVH for proximal object...")
+            if self._prox_hull_obj is None: # Check if already created
+                self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
+            
+            if self._prox_hull_obj and self._prox_hull_bvh is None: # Check if BVH already created
+                 self._prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
+
+            if not self._prox_hull_obj or not self._prox_hull_bvh:
+                self.report({'WARNING'}, "Failed to create convex hull or its BVH for proximal object. Convex hull optimization will be less effective or disabled for prox.")
+                # Continue without hull if it fails, check_collision will handle it or fall back
+
+        self._is_initialized = True
+        self._start_time = time.time()
         
         # Ensure cached hull attributes are reset for a new calculation run
         if hasattr(self, '_prox_hull_obj') and self._prox_hull_obj:
@@ -266,9 +278,6 @@ class COLLISION_OT_calculate(Operator):
                 self.remove_temp_object(self._prox_hull_obj)
         self._prox_hull_obj = None
         self._prox_hull_bvh = None # BVH trees are just Python objects, no Blender data to remove directly
-        
-        # Reset the distal mesh cache
-        self._dist_meshes = {}
         
         # Initialize index trackers for iteration
         self._cur_x_idx = 0
@@ -475,9 +484,6 @@ class COLLISION_OT_calculate(Operator):
         elif self._orig_rot_loc is not None and self._orig_rot_rotation is not None:
             self.restore_object_transform(rot_obj, self._orig_rot_loc, self._orig_rot_rotation)
             context.view_layer.update()
-        
-        # Clear the mesh caches to free memory
-        self._dist_meshes = {}
         
         # Clean up the cached proximal hull object and its BVH
         if hasattr(self, '_prox_hull_obj') and self._prox_hull_obj:
