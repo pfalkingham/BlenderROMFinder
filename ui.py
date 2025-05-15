@@ -21,7 +21,7 @@ class COLLISION_PT_panel(Panel):
         # Show version at the top
         version = bl_info.get("version", ("?",))
         version_str = ".".join(str(v) for v in version)
-        layout.label(text=f"Range of Motion Finder v{version_str}", icon='PLUGIN')
+        layout.label(text=f"Range of Motion Finder v{version_str}")
         
         # Check if calculation is in progress
         if props and getattr(props, 'is_calculating', False):
