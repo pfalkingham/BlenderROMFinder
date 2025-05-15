@@ -49,6 +49,14 @@ class COLLISION_PT_panel(Panel):
         if props.rotational_object and props.rotational_object.type == 'ARMATURE':
             box.prop(props, "rotational_bone")
         
+        # Axis and bone selection
+        box.prop(props, "ACSf", text="Fixed (proximal) axis")
+        if props.ACSf and props.ACSf.type == 'ARMATURE':
+            box.prop(props, "rotational_bone", text="Fixed (proximal) bone")
+        box.prop(props, "ACSm", text="Mobile (distal) axis")
+        if props.ACSm and props.ACSm.type == 'ARMATURE':
+            box.prop(props, "rotational_bone_2", text="Mobile (distal) bone")
+        
         # Rotation parameters
         box = layout.box()
         box.label(text="Rotation (degrees):")
