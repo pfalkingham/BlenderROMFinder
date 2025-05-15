@@ -25,6 +25,12 @@ class COLLISION_OT_cancel(Operator):
         else:
             self.report({'WARNING'}, "No calculation is in progress")
             
+        # Force UI refresh
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+                    
         return {'FINISHED'}
 
 class COLLISION_OT_calculate(Operator):
