@@ -12,37 +12,37 @@ from bpy.props import (
 
 class CollisionProperties(PropertyGroup):
     # Object selection
-    proximal_object = PointerProperty(
+    proximal_object: PointerProperty(
         name="Proximal Object",
         description="Select the proximal (fixed) object",
         type=bpy.types.Object
     )
     
-    distal_object = PointerProperty(
+    distal_object: PointerProperty(
         name="Distal Object",
         description="Select the distal (moving) object",
         type=bpy.types.Object
     )
     
-    ACSf = PointerProperty(
+    ACSf: PointerProperty(
         name="Fixed (proximal) axis",
         description="Select the object to use as the rotation center for the first joint (proximal)",
         type=bpy.types.Object
     )
     
-    ACSm = PointerProperty(
+    ACSm: PointerProperty(
         name="Mobile (distal) axis",
         description="Can select joint 1 again, or leave blank, if not translating, and axes are aligned",
         type=bpy.types.Object
     )
 
-    rotational_bone = EnumProperty(
+    rotational_bone: EnumProperty(
         name="Fixed (proximal) bone",
         description="Select the bone to use as the rotation center for the first joint (proximal, if armature)",
         items=lambda self, context: self.update_rotational_bone(context),
     )
 
-    rotational_bone_2 = EnumProperty(
+    rotational_bone_2: EnumProperty(
         name="Mobile (distal) bone",
         description="Select the bone to use as the rotation center for the second joint (distal, if armature). Can select joint 1 again, or leave blank, if not translating, and axes are aligned.",
         items=lambda self, context: self.update_rotational_bone_2(context),
@@ -62,7 +62,7 @@ class CollisionProperties(PropertyGroup):
 
     
     # Rotation parameters
-    rot_x_min = FloatProperty(
+    rot_x_min: FloatProperty(
         name="X Min",
         description="Minimum X rotation in degrees",
         default=-30.0,
@@ -70,7 +70,7 @@ class CollisionProperties(PropertyGroup):
         max=180.0
     )
     
-    rot_x_max = FloatProperty(
+    rot_x_max: FloatProperty(
         name="X Max",
         description="Maximum X rotation in degrees",
         default=30.0,
@@ -78,7 +78,7 @@ class CollisionProperties(PropertyGroup):
         max=180.0
     )
     
-    rot_x_inc = FloatProperty(
+    rot_x_inc: FloatProperty(
         name="X Inc",
         description="X rotation increment in degrees",
         default=5.0,
@@ -86,7 +86,7 @@ class CollisionProperties(PropertyGroup):
         max=90.0
     )
     
-    rot_y_min = FloatProperty(
+    rot_y_min: FloatProperty(
         name="Y Min",
         description="Minimum Y rotation in degrees",
         default=-30.0,
@@ -94,7 +94,7 @@ class CollisionProperties(PropertyGroup):
         max=180.0
     )
     
-    rot_y_max = FloatProperty(
+    rot_y_max: FloatProperty(
         name="Y Max",
         description="Maximum Y rotation in degrees",
         default=30.0,
@@ -102,7 +102,7 @@ class CollisionProperties(PropertyGroup):
         max=180.0
     )
     
-    rot_y_inc = FloatProperty(
+    rot_y_inc: FloatProperty(
         name="Y Inc",
         description="Y rotation increment in degrees",
         default=5.0,
@@ -110,7 +110,7 @@ class CollisionProperties(PropertyGroup):
         max=90.0
     )
     
-    rot_z_min = FloatProperty(
+    rot_z_min: FloatProperty(
         name="Z Min",
         description="Minimum Z rotation in degrees",
         default=-30.0,
@@ -118,7 +118,7 @@ class CollisionProperties(PropertyGroup):
         max=180.0
     )
     
-    rot_z_max = FloatProperty(
+    rot_z_max: FloatProperty(
         name="Z Max",
         description="Maximum Z rotation in degrees",
         default=30.0,
@@ -126,7 +126,7 @@ class CollisionProperties(PropertyGroup):
         max=180.0
     )
     
-    rot_z_inc = FloatProperty(
+    rot_z_inc: FloatProperty(
         name="Z Inc",
         description="Z rotation increment in degrees",
         default=5.0,
@@ -134,7 +134,7 @@ class CollisionProperties(PropertyGroup):
         max=90.0
     )
     
-    rot_order = EnumProperty(
+    rot_order: EnumProperty(
         name="Rotation Order",
         description="Order in which rotations are applied",
         items=[
@@ -149,7 +149,7 @@ class CollisionProperties(PropertyGroup):
     )
     
     # Translation parameters
-    trans_x_min = FloatProperty(
+    trans_x_min: FloatProperty(
         name="X Min",
         description="Minimum X translation",
         default=0.0,
@@ -157,7 +157,7 @@ class CollisionProperties(PropertyGroup):
         max=100.0
     )
     
-    trans_x_max = FloatProperty(
+    trans_x_max: FloatProperty(
         name="X Max",
         description="Maximum X translation",
         default=0.0,
@@ -165,7 +165,7 @@ class CollisionProperties(PropertyGroup):
         max=100.0
     )
     
-    trans_x_inc = FloatProperty(
+    trans_x_inc: FloatProperty(
         name="X Inc",
         description="X translation increment",
         default=0.1,
@@ -174,7 +174,7 @@ class CollisionProperties(PropertyGroup):
         precision=4
     )
     
-    trans_y_min = FloatProperty(
+    trans_y_min: FloatProperty(
         name="Y Min",
         description="Minimum Y translation",
         default=0.0,
@@ -182,7 +182,7 @@ class CollisionProperties(PropertyGroup):
         max=100.0
     )
     
-    trans_y_max = FloatProperty(
+    trans_y_max: FloatProperty(
         name="Y Max",
         description="Maximum Y translation",
         default=0.0,
@@ -190,7 +190,7 @@ class CollisionProperties(PropertyGroup):
         max=100.0
     )
     
-    trans_y_inc = FloatProperty(
+    trans_y_inc: FloatProperty(
         name="Y Inc",
         description="Y translation increment",
         default=0.1,
@@ -199,7 +199,7 @@ class CollisionProperties(PropertyGroup):
         precision=4
     )
     
-    trans_z_min = FloatProperty(
+    trans_z_min: FloatProperty(
         name="Z Min",
         description="Minimum Z translation",
         default=0.0,
@@ -207,7 +207,7 @@ class CollisionProperties(PropertyGroup):
         max=100.0
     )
     
-    trans_z_max = FloatProperty(
+    trans_z_max: FloatProperty(
         name="Z Max",
         description="Maximum Z translation",
         default=0.0,
@@ -215,7 +215,7 @@ class CollisionProperties(PropertyGroup):
         max=100.0
     )
     
-    trans_z_inc = FloatProperty(
+    trans_z_inc: FloatProperty(
         name="Z Inc",
         description="Z translation increment",
         default=0.1,
@@ -224,13 +224,13 @@ class CollisionProperties(PropertyGroup):
         precision=4
     )
     
-    use_convex_hull_optimization = BoolProperty(
+    use_convex_hull_optimization: BoolProperty(
         name="Use Convex Hull Pre-Check",
         description="Enable to use a faster convex hull pre-check. WARNING: May give incorrect non-collision results if one object can be fully contained within the other. Disable for full accuracy in such cases.",
         default=False  # Off by default
     )
     
-    batch_size = IntProperty(
+    batch_size: IntProperty(
         name="Batch Size",
         description="Number of iterations to process per update (higher values = faster but less responsive UI)",
         default=10,
@@ -239,13 +239,13 @@ class CollisionProperties(PropertyGroup):
     )
     
     # Progress tracking
-    is_calculating = BoolProperty(
+    is_calculating: BoolProperty(
         name="Is Calculating",
         description="Whether a calculation is currently in progress",
         default=False
     )
     
-    calculation_progress = FloatProperty(
+    calculation_progress: FloatProperty(
         name="Calculation Progress",
         description="Progress of the current calculation (0-100%)",
         default=0.0,
@@ -254,26 +254,26 @@ class CollisionProperties(PropertyGroup):
         subtype='PERCENTAGE'
     )
     
-    time_remaining: bpy.props.StringProperty(
+    time_remaining: StringProperty(
         name="Time Remaining",
         description="Estimated time remaining",
         default=""
     )
     
-    export_to_csv = BoolProperty(
+    export_to_csv: BoolProperty(
         name="Export to CSV",
         description="Enable to export collision data to a CSV file",
         default=True
     )
     
-    export_path = StringProperty(
+    export_path: StringProperty(
         name="Export Path",
         description="Path to export collision data CSV",
         default="//collision_data.csv",
         subtype='FILE_PATH'
     )
     
-    visualize_collisions = BoolProperty(
+    visualize_collisions: BoolProperty(
         name="Show Animation Layer",
         description="Create an NLA animation layer with non-colliding poses and make it visible",
         default=True
