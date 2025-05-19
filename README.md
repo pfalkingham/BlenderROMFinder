@@ -92,7 +92,6 @@ Define the range and increment for translational offsets. Their meaning depends 
 
 ## Known Issues / Future Ideas
 
--   More sophisticated definition or UI for initial prism axes in "M&G Prism" translation mode.
 -   Explore SDF (Signed Distance Fields) for collision detection.
 
 Contributions and feedback are welcome!
