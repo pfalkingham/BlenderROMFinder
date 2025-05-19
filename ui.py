@@ -38,16 +38,19 @@ class COLLISION_PT_panel(Panel):
             cancel_row = box.row()
             cancel_row.operator("collision.cancel", icon='X')
             return  # Don't show the rest of the UI while calculating
-        
-        # Object selection
+          # Object selection
         box = layout.box()
         box.label(text="Objects:")
         box.prop(props, "proximal_object")
         box.prop(props, "distal_object")
-        box.prop(props, "rotational_object")
-        # Show bone dropdown if rotational_object is an armature
-        if props.rotational_object and props.rotational_object.type == 'ARMATURE':
-            box.prop(props, "rotational_bone")
+        box.prop(props, "ACSf_object")
+        # Show bone dropdown if ACSf_object is an armature
+        if props.ACSf_object and props.ACSf_object.type == 'ARMATURE':
+            box.prop(props, "ACSf_bone")
+        box.prop(props, "ACSm_object")
+        # Show bone dropdown if ACSm_object is an armature
+        if props.ACSm_object and props.ACSm_object.type == 'ARMATURE':
+            box.prop(props, "ACSm_bone")
         
         # Rotation parameters
         box = layout.box()

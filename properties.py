@@ -24,23 +24,43 @@ class CollisionProperties(PropertyGroup):
         type=bpy.types.Object
     )
     
-    rotational_object: PointerProperty(
-        name="Rotational Object",
-        description="Select the object to use as the rotation center",
+    # ACS objects (anatomical coordinate system)
+    ACSf_object: PointerProperty(
+        name="ACS Fixed",
+        description="Select the fixed anatomical coordinate system (determines flexion/extension Z axis)",
+        type=bpy.types.Object
+    )
+    
+    ACSm_object: PointerProperty(
+        name="ACS Mobile",
+        description="Select the mobile anatomical coordinate system (determines long axis rotation X axis)",
         type=bpy.types.Object
     )
 
-    def update_rotational_bone(self, context):
-        # Called when rotational_object changes, to update the bone list
-        if self.rotational_object and self.rotational_object.type == 'ARMATURE':
-            armature = self.rotational_object.data
+    def update_ACSf_bone(self, context):
+        # Called when ACSf_object changes, to update the bone list
+        if self.ACSf_object and self.ACSf_object.type == 'ARMATURE':
+            armature = self.ACSf_object.data
             return [(bone.name, bone.name, "") for bone in armature.bones]
         return []
 
-    rotational_bone: EnumProperty(
-        name="Rotational Bone",
-        description="Select the bone to use as the rotation center (if armature)",
-        items=lambda self, context: self.update_rotational_bone(context),
+    ACSf_bone: EnumProperty(
+        name="ACS Fixed Bone",
+        description="Select the fixed bone to use for the ACS fixed coordinate system",
+        items=lambda self, context: self.update_ACSf_bone(context),
+    )
+    
+    def update_ACSm_bone(self, context):
+        # Called when ACSm_object changes, to update the bone list
+        if self.ACSm_object and self.ACSm_object.type == 'ARMATURE':
+            armature = self.ACSm_object.data
+            return [(bone.name, bone.name, "") for bone in armature.bones]
+        return []
+
+    ACSm_bone: EnumProperty(
+        name="ACS Mobile Bone",
+        description="Select the mobile bone to use for the ACS mobile coordinate system",
+        items=lambda self, context: self.update_ACSm_bone(context),
     )
     
     # Rotation parameters

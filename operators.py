@@ -167,6 +167,49 @@ class COLLISION_OT_calculate(Operator):
                 return armature_obj.matrix_world @ pose_bone.matrix
         return None
 
+    def calculate_acs_rotation(self, context, ACSf_obj, ACSm_obj, rot_x, rot_y, rot_z):
+        """Calculate proper anatomical rotations based on ACSf and ACSm coordinate systems
+        
+        Parameters:
+        - ACSf_obj: The fixed anatomical coordinate system object
+        - ACSm_obj: The mobile anatomical coordinate system object
+        - rot_x: X rotation in degrees (long axis rotation)
+        - rot_y: Y rotation in degrees (adduction/abduction)
+        - rot_z: Z rotation in degrees (flexion/extension)
+        
+        Returns:
+        - Rotation matrix to apply to ACSm object
+        """
+        # Get the Z axis from ACSf (for flexion/extension)
+        # In Blender's local space, Z axis is (0,0,1) rotated by the object's rotation
+        z_axis = ACSf_obj.matrix_world.to_quaternion() @ mathutils.Vector((0, 0, 1))
+        z_axis.normalize()
+        
+        # Get the X axis from ACSm (for long axis rotation)
+        x_axis = ACSm_obj.matrix_world.to_quaternion() @ mathutils.Vector((1, 0, 0))
+        x_axis.normalize()
+        
+        # Calculate Y axis as the cross product of Z and X
+        # This gives us the adduction/abduction axis
+        y_axis = z_axis.cross(x_axis)
+        y_axis.normalize()
+        
+        # Recalculate X to ensure orthogonality (X = Y × Z)
+        x_axis = y_axis.cross(z_axis)
+        x_axis.normalize()
+        
+        # Create rotation matrices for each axis
+        rot_matrix_x = mathutils.Matrix.Rotation(math.radians(rot_x), 4, x_axis)
+        rot_matrix_y = mathutils.Matrix.Rotation(math.radians(rot_y), 4, y_axis)
+        rot_matrix_z = mathutils.Matrix.Rotation(math.radians(rot_z), 4, z_axis)
+        
+        # Combine rotations according to specified order
+        # For anatomical movement, typically Z is applied first (flexion/extension)
+        # Then Y (adduction/abduction), and finally X (long axis rotation)
+        final_rotation = rot_matrix_x @ rot_matrix_y @ rot_matrix_z
+        
+        return final_rotation
+
     def initialize_calculation(self, context):
         """Set up calculation parameters and state"""
         props = context.scene.collision_props
@@ -175,39 +218,65 @@ class COLLISION_OT_calculate(Operator):
         if not props.proximal_object or not props.distal_object:
             self.report({'ERROR'}, "Both proximal and distal objects must be selected")
             return False
-        
-        # Get the objects
+          # Get the objects
         prox_obj = props.proximal_object
         dist_obj = props.distal_object
-        rot_obj = props.rotational_object if props.rotational_object else dist_obj
-        use_bone = False
-        bone_matrix = None
-        bone_name = getattr(props, 'rotational_bone', None)
-        if rot_obj and rot_obj.type == 'ARMATURE' and bone_name:
-            bone_matrix = self.get_bone_world_matrix(rot_obj, bone_name)
-            use_bone = bone_matrix is not None
+        ACSf_obj = props.ACSf_object
+        ACSm_obj = props.ACSm_object
         
-        # Store original transformations - this is our reference point
-        if use_bone:
-            self._orig_bone_matrix = bone_matrix.copy()
-            self._orig_rot_loc = None
-            self._orig_rot_rotation = None
-            self.report({'INFO'}, f"Using bone '{bone_name}' as pivot.")
+        if not ACSf_obj or not ACSm_obj:
+            self.report({'ERROR'}, "Both ACSf and ACSm objects must be selected")
+            return False
+
+        # Check for armature bone usage in ACSf
+        use_ACSf_bone = False
+        ACSf_bone_matrix = None
+        ACSf_bone_name = getattr(props, 'ACSf_bone', None)
+        if ACSf_obj and ACSf_obj.type == 'ARMATURE' and ACSf_bone_name:
+            ACSf_bone_matrix = self.get_bone_world_matrix(ACSf_obj, ACSf_bone_name)
+            use_ACSf_bone = ACSf_bone_matrix is not None
+            
+        # Check for armature bone usage in ACSm
+        use_ACSm_bone = False
+        ACSm_bone_matrix = None
+        ACSm_bone_name = getattr(props, 'ACSm_bone', None)
+        if ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name:
+            ACSm_bone_matrix = self.get_bone_world_matrix(ACSm_obj, ACSm_bone_name)
+            use_ACSm_bone = ACSm_bone_matrix is not None
+        
+        # Store original transformations for ACSf - this is our fixed reference point
+        if use_ACSf_bone:
+            self._orig_ACSf_bone_matrix = ACSf_bone_matrix.copy()
+            self._orig_ACSf_loc = None
+            self._orig_ACSf_rotation = None
+            self.report({'INFO'}, f"Using bone '{ACSf_bone_name}' as fixed ACS.")
         else:
-            self._orig_rot_loc = rot_obj.location.copy()
-            self._orig_rot_rotation = rot_obj.rotation_euler.copy()
-            self.report({'INFO'}, f"Starting from rotation: {[math.degrees(r) for r in self._orig_rot_rotation]}")
-            self.report({'INFO'}, f"Starting from location: {self._orig_rot_loc}")
+            self._orig_ACSf_loc = ACSf_obj.location.copy()
+            self._orig_ACSf_rotation = ACSf_obj.rotation_euler.copy()
+            self.report({'INFO'}, f"Fixed ACS starting from rotation: {[math.degrees(r) for r in self._orig_ACSf_rotation]}")
+            self.report({'INFO'}, f"Fixed ACS starting from location: {self._orig_ACSf_loc}")
+            
+        # Store original transformations for ACSm - this will be moved
+        if use_ACSm_bone:
+            self._orig_ACSm_bone_matrix = ACSm_bone_matrix.copy()
+            self._orig_ACSm_loc = None
+            self._orig_ACSm_rotation = None
+            self.report({'INFO'}, f"Using bone '{ACSm_bone_name}' as mobile ACS.")
+        else:
+            self._orig_ACSm_loc = ACSm_obj.location.copy()
+            self._orig_ACSm_rotation = ACSm_obj.rotation_euler.copy()
+            self.report({'INFO'}, f"Mobile ACS starting from rotation: {[math.degrees(r) for r in self._orig_ACSm_rotation]}")
+            self.report({'INFO'}, f"Mobile ACS starting from location: {self._orig_ACSm_loc}")
         
         # Keyframe the starting position at frame 0
-        if use_bone:
-            pose_bone = rot_obj.pose.bones.get(bone_name)
+        if use_ACSm_bone:
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
             if pose_bone:
                 pose_bone.keyframe_insert(data_path="location", frame=0)
                 pose_bone.keyframe_insert(data_path="rotation_euler", frame=0)
         else:
-            rot_obj.keyframe_insert(data_path="location", frame=0)
-            rot_obj.keyframe_insert(data_path="rotation_euler", frame=0)
+            ACSm_obj.keyframe_insert(data_path="location", frame=0)
+            ACSm_obj.keyframe_insert(data_path="rotation_euler", frame=0)
         
         # Create rotation range lists - these are RELATIVE to the current rotation
         self._rot_x_range = np.arange(props.rot_x_min, props.rot_x_max + props.rot_x_inc, props.rot_x_inc).tolist()
@@ -315,13 +384,16 @@ class COLLISION_OT_calculate(Operator):
         # Get the objects
         prox_obj = props.proximal_object
         dist_obj = props.distal_object
-        rot_obj = props.rotational_object if props.rotational_object else dist_obj
-        bone_name = getattr(props, 'rotational_bone', None)
-        use_bone = rot_obj and rot_obj.type == 'ARMATURE' and bone_name
+        ACSf_obj = props.ACSf_object
+        ACSm_obj = props.ACSm_object
+        ACSf_bone_name = getattr(props, 'ACSf_bone', None)
+        ACSm_bone_name = getattr(props, 'ACSm_bone', None)
+        use_ACSf_bone = ACSf_obj and ACSf_obj.type == 'ARMATURE' and ACSf_bone_name
+        use_ACSm_bone = ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name
         
         # Store original transformations for restoration at end if using scene updates
-        orig_loc = rot_obj.location.copy()
-        orig_rot = rot_obj.rotation_euler.copy()
+        orig_ACSm_loc = ACSm_obj.location.copy() if not use_ACSm_bone else None
+        orig_ACSm_rot = ACSm_obj.rotation_euler.copy() if not use_ACSm_bone else None
         
         # Process a batch of iterations
         batch_counter = 0
@@ -339,70 +411,60 @@ class COLLISION_OT_calculate(Operator):
                 self._is_finished = True
                 break
                 
-            rot_x = self._rot_x_range[self._cur_x_idx]
-            rot_y = self._rot_y_range[self._cur_y_idx]
-            rot_z = self._rot_z_range[self._cur_z_idx]
+            rot_x = self._rot_x_range[self._cur_x_idx]  # X-axis (long axis rotation) from ACSm
+            rot_y = self._rot_y_range[self._cur_y_idx]  # Y-axis (adduction/abduction) calculated
+            rot_z = self._rot_z_range[self._cur_z_idx]  # Z-axis (flexion/extension) from ACSf
             trans_x = self._trans_x_range[self._cur_tx_idx]
             trans_y = self._trans_y_range[self._cur_ty_idx]
             trans_z = self._trans_z_range[self._cur_tz_idx]
+              # Calculate proper anatomical rotations based on ACS objects
+            rotation_matrix = self.calculate_acs_rotation(context, ACSf_obj, ACSm_obj, rot_x, rot_y, rot_z)
             
-            if use_bone:
-                pose_bone = rot_obj.pose.bones.get(bone_name)
+            # Apply rotations and translations to ACSm (mobile object)
+            if use_ACSm_bone:
+                pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
                 if pose_bone:
-                    # Set absolute rotation relative to initial pose
+                    # Apply the calculated rotation to the pose bone
+                    orig_matrix = ACSm_obj.matrix_world.copy() @ pose_bone.matrix.copy()
+                    new_matrix = orig_matrix @ rotation_matrix
+                    
+                    # Extract rotation and set it
                     pose_bone.rotation_mode = props.rot_order
-                    pose_bone.rotation_euler = mathutils.Euler(
-                        (
-                            self._orig_bone_matrix.to_euler(props.rot_order).x + math.radians(rot_x),
-                            self._orig_bone_matrix.to_euler(props.rot_order).y + math.radians(rot_y),
-                            self._orig_bone_matrix.to_euler(props.rot_order).z + math.radians(rot_z)
-                        ),
-                        props.rot_order
-                    )
+                    pose_bone.rotation_euler = new_matrix.to_euler(props.rot_order)
+                    
+                    # Apply translations to ACSm
                     pose_bone.location = mathutils.Vector((trans_x, trans_y, trans_z))
                     context.view_layer.update()
             else:
-                rot_obj.rotation_mode = props.rot_order
-                rot_obj.rotation_euler = mathutils.Euler(
-                    (
-                        self._orig_rot_rotation.x + math.radians(rot_x),
-                        self._orig_rot_rotation.y + math.radians(rot_y),
-                        self._orig_rot_rotation.z + math.radians(rot_z)
-                    ),
-                    props.rot_order
-                )
-                rot_obj.location = self._orig_rot_loc + mathutils.Vector((trans_x, trans_y, trans_z))
+                # Apply the calculated rotation to the ACSm object
+                orig_matrix = ACSm_obj.matrix_world.copy()
+                new_matrix = orig_matrix @ rotation_matrix
+                
+                # Extract rotation and set it
+                ACSm_obj.rotation_mode = props.rot_order
+                ACSm_obj.rotation_euler = new_matrix.to_euler(props.rot_order)
+                
+                # Apply translations to ACSm
+                ACSm_obj.location = self._orig_ACSm_loc + mathutils.Vector((trans_x, trans_y, trans_z))
                 context.view_layer.update()
             
             # Check for collision using the pre-calculated proximal BVH tree
             collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
             
-            # Record data
-            # Calculate absolute rotations for clarity
-            if self._orig_rot_rotation is not None:
-                absolute_rot_x = self._orig_rot_rotation.x + math.radians(rot_x)
-                absolute_rot_y = self._orig_rot_rotation.y + math.radians(rot_y)
-                absolute_rot_z = self._orig_rot_rotation.z + math.radians(rot_z)
-                # Convert back to degrees for storage
-                absolute_rot_x = math.degrees(absolute_rot_x)
-                absolute_rot_y = math.degrees(absolute_rot_y)
-                absolute_rot_z = math.degrees(absolute_rot_z)
-            else:
-                absolute_rot_x = None
-                absolute_rot_y = None
-                absolute_rot_z = None
-            
+            # Record data for CSV export
             self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 0 if collision else 1]) #Changed so that 0 is collision and 1 is valid pose.
             
             # If pose is collision-free, insert keyframes immediately
             if not collision:
                 if props.visualize_collisions:
-                    if use_bone and pose_bone:
-                        pose_bone.keyframe_insert(data_path="location", frame=self._non_collision_frame)
-                        pose_bone.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
+                    if use_ACSm_bone:
+                        pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+                        if pose_bone:
+                            pose_bone.keyframe_insert(data_path="location", frame=self._non_collision_frame)
+                            pose_bone.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
                     else:
-                        rot_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
-                        rot_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
+                        ACSm_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
+                        ACSm_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
                 self._non_collision_frame += 1
             
             # Increment indices using more efficient approach
@@ -451,13 +513,14 @@ class COLLISION_OT_calculate(Operator):
                             area.tag_redraw()
         
         # Always restore original position and update
-        if use_bone and pose_bone:
-            # Reset bone transform
-            pose_bone.location = mathutils.Vector((0,0,0))
-            pose_bone.rotation_euler = mathutils.Euler((0,0,0), props.rot_order)
-            context.view_layer.update()
-        else:
-            self.restore_object_transform(rot_obj, orig_loc, orig_rot)
+        if use_ACSm_bone:
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+            if pose_bone:
+                pose_bone.location = mathutils.Vector((0,0,0))
+                pose_bone.rotation_euler = mathutils.Euler((0,0,0), props.rot_order)
+                context.view_layer.update()
+        elif orig_ACSm_loc is not None and orig_ACSm_rot is not None:
+            self.restore_object_transform(ACSm_obj, orig_ACSm_loc, orig_ACSm_rot)
             context.view_layer.update()
         
         # Check if we're done
@@ -471,19 +534,21 @@ class COLLISION_OT_calculate(Operator):
         """Complete the calculation and process results"""
         props = context.scene.collision_props
         
-        # Reset rotation object to original position
-        rot_obj = props.rotational_object if props.rotational_object else props.distal_object
-        bone_name = getattr(props, 'rotational_bone', None)
-        use_bone = rot_obj and rot_obj.type == 'ARMATURE' and bone_name
-        if use_bone:
-            pose_bone = rot_obj.pose.bones.get(bone_name)
+        # Reset ACSm object to original position
+        ACSm_obj = props.ACSm_object
+        ACSm_bone_name = getattr(props, 'ACSm_bone', None)
+        use_ACSm_bone = ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name
+        
+        if use_ACSm_bone:
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
             if pose_bone:
                 pose_bone.location = mathutils.Vector((0,0,0))
                 pose_bone.rotation_euler = mathutils.Euler((0,0,0), props.rot_order)
                 context.view_layer.update()
-        elif self._orig_rot_loc is not None and self._orig_rot_rotation is not None:
-            self.restore_object_transform(rot_obj, self._orig_rot_loc, self._orig_rot_rotation)
-            context.view_layer.update()
+        elif hasattr(self, '_orig_ACSm_loc') and hasattr(self, '_orig_ACSm_rotation'):
+            if self._orig_ACSm_loc is not None and self._orig_ACSm_rotation is not None:
+                self.restore_object_transform(ACSm_obj, self._orig_ACSm_loc, self._orig_ACSm_rotation)
+                context.view_layer.update()
         
         # Clean up the cached proximal hull object and its BVH
         if hasattr(self, '_prox_hull_obj') and self._prox_hull_obj:
@@ -517,8 +582,7 @@ class COLLISION_OT_calculate(Operator):
             elapsed = time.time() - self._start_time
             mins, secs = divmod(int(elapsed), 60)
             self.report({'INFO'}, f"Total time taken: {mins:02d}:{secs:02d}")
-        
-        # Reset calculation state
+          # Reset calculation state
         props.is_calculating = False
         props.calculation_progress = 0.0
         self._is_initialized = False
@@ -526,8 +590,18 @@ class COLLISION_OT_calculate(Operator):
         
         # Clear references to temporary objects
         self._prox_bvh = None
-        self._orig_rot_loc = None
-        self._orig_rot_rotation = None
+        if hasattr(self, '_orig_ACSf_loc'):
+            self._orig_ACSf_loc = None
+        if hasattr(self, '_orig_ACSf_rotation'):
+            self._orig_ACSf_rotation = None
+        if hasattr(self, '_orig_ACSf_bone_matrix'):
+            self._orig_ACSf_bone_matrix = None
+        if hasattr(self, '_orig_ACSm_loc'):
+            self._orig_ACSm_loc = None
+        if hasattr(self, '_orig_ACSm_rotation'):
+            self._orig_ACSm_rotation = None
+        if hasattr(self, '_orig_ACSm_bone_matrix'):
+            self._orig_ACSm_bone_matrix = None
         
         return
     
