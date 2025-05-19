@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Range of Motion Finder",
-    "author": "Peter Falkingham, Andréas Jannel, Ben Griffin (Liverpool John Moores University)",
-    "version": (2, 2, 0),
+    "author": "Peter Falkingham, Andréas Jannel, Ben Griffin (Liverpool John Moores University), and gratuitious AI/LLMs",
+    "version": (2, 1, 0),
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > ROM",
     "description": "Find poses where two objects do not collide based on rotations and translations",
@@ -29,17 +29,14 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    # Remove old property if it exists (prevents registration bugs)
-    if hasattr(bpy.types.Scene, 'collision_props'):
-        del bpy.types.Scene.collision_props
+    
     bpy.types.Scene.collision_props = PointerProperty(type=CollisionProperties)
 
 def unregister():
-    # Remove property before unregistering classes
-    if hasattr(bpy.types.Scene, 'collision_props'):
-        del bpy.types.Scene.collision_props
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    
+    del bpy.types.Scene.collision_props
 
 if __name__ == "__main__":
     register()

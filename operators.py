@@ -25,12 +25,6 @@ class COLLISION_OT_cancel(Operator):
         else:
             self.report({'WARNING'}, "No calculation is in progress")
             
-        # Force UI refresh
-        for window in bpy.context.window_manager.windows:
-            for area in window.screen.areas:
-                if area.type == 'VIEW_3D':
-                    area.tag_redraw()
-                    
         return {'FINISHED'}
 
 class COLLISION_OT_calculate(Operator):
@@ -38,428 +32,636 @@ class COLLISION_OT_calculate(Operator):
     bl_idname = "collision.calculate"
     bl_label = "Calculate Collisions"
     bl_options = {'REGISTER', 'UNDO'}
-
+    
     # Modal properties
     _timer = None
     _is_initialized = False
     _is_finished = False
-
-    def execute(self, context):
-        """Entry point for the collision calculation operator."""
-        # 1. Validate input and initialize state
-        if not self.validate_and_initialize(context):
-            return {'CANCELLED'}
-
-        props = context.scene.collision_props
-        frame = 1  # Start keyframing valid poses at frame 1 (frame 0 is original pose)
-        valid_poses = 0
-        total_poses = 0
-        cancelled = False
-
-        batch_size = getattr(props, 'batch_size', 10)
-        wm = bpy.context.window_manager
-        wm.progress_begin(0, self._total_iterations)
-        start_time = time.time()
-        for pose_idx, pose_params in enumerate(self.generate_pose_sequence(context)):
-            # Check for user cancellation
-            if hasattr(props, 'is_calculating') and not props.is_calculating:
-                cancelled = True
-                break
-            # Set frame for this pose
-            bpy.context.scene.frame_set(frame)
-            # Apply pose
-            self.apply_pose(context, pose_params)
-            # Check collision
-            is_valid = not self.check_collision(context)
-            # Record result (keyframes if valid)
-            self.record_result(context, pose_params, is_valid)
-            if is_valid:
-                valid_poses += 1
-            total_poses += 1
-            frame += 1
-            self._completed_iterations += 1
-            # Update progress every batch_size iterations
-            if self._completed_iterations % batch_size == 0 or self._completed_iterations == self._total_iterations:
-                props.calculation_progress = 100.0 * self._completed_iterations / max(1, self._total_iterations)
-                elapsed = time.time() - start_time
-                if self._completed_iterations > 0:
-                    est_total = elapsed / self._completed_iterations * self._total_iterations
-                    est_remaining = max(0, est_total - elapsed)
-                    props.time_remaining = f"{int(est_remaining // 60)}m {int(est_remaining % 60)}s"
-                else:
-                    props.time_remaining = ""
-                wm.progress_update(self._completed_iterations)
-                # Allow Blender to update UI
-                bpy.context.view_layer.update()
-        wm.progress_end()
-        props.calculation_progress = 100.0
-        props.is_calculating = False
-        props.time_remaining = ""
-
-        # Write CSV
-        self.write_csv(context)
-        # Restore original pose (for user convenience)
-        self.restore_original_pose(context)
-
-        # Clean up cached meshes if not using convex hulls
-        if hasattr(self, '_proximal_mesh') and self._proximal_mesh:
-            bpy.data.meshes.remove(self._proximal_mesh)
-            self._proximal_mesh = None
-        if hasattr(self, '_distal_mesh') and self._distal_mesh:
-            bpy.data.meshes.remove(self._distal_mesh)
-            self._distal_mesh = None
-
-        elapsed = time.time() - self._start_time
-        if cancelled:
-            self.report({'WARNING'}, f"Calculation cancelled. {valid_poses} valid / {total_poses} poses checked in {elapsed:.2f}s.")
+    
+    # Calculation state tracking
+    _rot_x_range = []
+    _rot_y_range = []
+    _rot_z_range = []
+    _trans_x_range = []
+    _trans_y_range = []
+    _trans_z_range = []
+    _csv_data = []
+    _collision_data = []
+    _total_iterations = 0
+    _completed_iterations = 0
+    _prox_bvh = None
+    _orig_rot_loc = None
+    _orig_rot_rotation = None
+    _orig_bone_matrix_local = None
+    
+    # Cached proximal hull object and its BVH tree
+    _prox_hull_obj = None 
+    _prox_hull_bvh = None
+    
+    _cur_x_idx = 0
+    _cur_y_idx = 0
+    _cur_z_idx = 0
+    _cur_tx_idx = 0
+    _cur_ty_idx = 0
+    _cur_tz_idx = 0
+    
+    # Additional optimization variables
+    _start_time = None
+    
+    def create_bvh_tree(self, obj, transform_matrix=None):
+        """Create a BVH tree from an object's mesh data, with optional transformation."""
+        bm = bmesh.new()
+        mesh = obj.to_mesh()
+        bm.from_mesh(mesh)
+        if transform_matrix is not None:
+            bm.transform(transform_matrix)
         else:
-            self.report({'INFO'}, f"Calculation complete: {valid_poses} valid / {total_poses} poses checked in {elapsed:.2f}s.")
-        return {'FINISHED'}
+            bm.transform(obj.matrix_world)
+        bvh = mathutils.bvhtree.BVHTree.FromBMesh(bm)
+        bm.free()
+        obj.to_mesh_clear()
+        return bvh
 
-    # --- Helper Functions ---
+    def create_convex_hull_object(self, obj):
+        """Create a temporary convex hull mesh object from the given object."""
+        # Duplicate the object and enter edit mode
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.duplicate()
+        hull_obj = bpy.context.active_object
+        # Enter edit mode and create convex hull
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.convex_hull()
+        bpy.ops.object.mode_set(mode='OBJECT')
+        return hull_obj
 
-    def validate_and_initialize(self, context):
-        """Validate user input and initialize calculation state."""
+    def remove_temp_object(self, obj):
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+    def restore_object_transform(self, obj, location, rotation):
+        """Restore the object's location and rotation."""
+        obj.location = location.copy()
+        obj.rotation_euler = rotation.copy()
+
+    def check_collision(self, prox_obj, dist_obj, prox_bvh_original_mesh=None, transform_matrix=None):
+        """Use BVH trees to check for collision between two objects, with optional convex hull optimization."""
+        props = bpy.context.scene.collision_props # Get access to properties
+
+        if props.use_convex_hull_optimization:
+            # 1. Proximal Hull (cached Blender object and its BVH)
+            if self._prox_hull_obj is None:
+                self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
+            
+            if self._prox_hull_bvh is None:
+                if self._prox_hull_obj:
+                    self._prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
+                else:
+                    # Fall through to original mesh check if hull creation fails
+                    pass 
+
+            if not self._prox_hull_bvh:
+                # Fall through to original mesh check
+                pass 
+            else:
+                # 2. Distal Hull (temporary Blender object and its BVH for current pose)
+                temp_dist_hull_obj = self.create_convex_hull_object(dist_obj)
+                if not temp_dist_hull_obj:
+                    # Fall through to original mesh check
+                    pass 
+                else:
+                    current_dist_hull_bvh = self.create_bvh_tree(temp_dist_hull_obj)
+                    
+                    if temp_dist_hull_obj.name in bpy.data.objects:
+                        self.remove_temp_object(temp_dist_hull_obj)
+                    temp_dist_hull_obj = None
+
+                    if not current_dist_hull_bvh:
+                        # Fall through to original mesh check
+                        pass 
+                    else:
+                        # 3. Hull Check
+                        hull_overlap_pairs = self._prox_hull_bvh.overlap(current_dist_hull_bvh)
+                        if not hull_overlap_pairs:
+                            return False # No collision if hulls don't overlap (potential containment missed)
+        
+        # 4. Original Mesh Check (if hulls overlapped, hull check was skipped, or optimization is off)
+        # BVH for distal object is created directly as poses are unique (or caching is removed)
+        dist_bvh_original_mesh = self.create_bvh_tree(dist_obj, transform_matrix)
+        
+        if not prox_bvh_original_mesh or not dist_bvh_original_mesh:
+            self.report({'ERROR'}, "BVH for original mesh check not available. Proximal or Distal BVH failed.")
+            return True # Fail safe
+
+        original_mesh_overlap_pairs = prox_bvh_original_mesh.overlap(dist_bvh_original_mesh)
+        
+        return len(original_mesh_overlap_pairs) > 0
+
+    def get_bone_world_matrix(self, armature_obj, bone_name):
+        # Get the world matrix of the specified bone in the armature
+        if armature_obj and armature_obj.type == 'ARMATURE' and bone_name:
+            # Use pose bone for current transform
+            pose_bone = armature_obj.pose.bones.get(bone_name)
+            if pose_bone:
+                return armature_obj.matrix_world @ pose_bone.matrix
+        return None
+
+    def calculate_acs_rotation(self, context, ACSf_obj, ACSm_obj, rot_x_degrees, rot_y_degrees, rot_z_degrees):
+        """Return a pure Flexion/Extension (FE) rotation matrix local to ACSf.
+        Only rot_z_degrees (FE) is used; others are ignored.
+        The returned matrix is a rotation about the local Z axis of ACSf.
+        """
+        import mathutils
+        import math
+        from mathutils import Matrix, Vector
+
+        # Start with identity (ACSm aligned with ACSf)
+        current_transform_local_to_ACSf = Matrix.Identity(4)
+
+        # Flexion/Extension (FE)
+        axis_Z_FE_in_ACSf_local = Vector((0, 0, 1))
+        rot_mat_FE = Matrix.Rotation(math.radians(rot_z_degrees), 4, axis_Z_FE_in_ACSf_local)
+        current_transform_local_to_ACSf = current_transform_local_to_ACSf @ rot_mat_FE
+
+        # AD/AB axis: X of ACSm after FE, in ACSf local
+        axis_X_ACSm_in_ACSf_local_after_FE = current_transform_local_to_ACSf.col[0].to_3d().normalized()
+        #print("FE Axis (ACSf local Z):", axis_Z_FE_in_ACSf_local)
+        #print("ACSm X-axis after FE (in ACSf local):", axis_X_ACSm_in_ACSf_local_after_FE)
+
+        # AD/AB axis is cross product (Y = Z x X')
+        axis_Y_ADAB_in_ACSf_local = axis_Z_FE_in_ACSf_local.cross(axis_X_ACSm_in_ACSf_local_after_FE)
+        if axis_Y_ADAB_in_ACSf_local.length < 1e-8:
+            axis_Y_ADAB_in_ACSf_local = Vector((0, 1, 0))
+        else:
+            axis_Y_ADAB_in_ACSf_local.normalize()
+
+        rot_mat_ADAB = Matrix.Rotation(math.radians(rot_y_degrees), 4, axis_Y_ADAB_in_ACSf_local)
+        current_transform_local_to_ACSf = current_transform_local_to_ACSf @ rot_mat_ADAB
+
+        # Now apply the X-axis rotation (long axis rotation)
+        rot_mat_LAR_local_to_new_ACSm_frame = Matrix.Rotation(math.radians(rot_x_degrees), 4, Vector((1, 0, 0)))
+        current_transform_local_to_ACSf = current_transform_local_to_ACSf @ rot_mat_LAR_local_to_new_ACSm_frame
+
+        return current_transform_local_to_ACSf
+
+    def initialize_calculation(self, context):
+        """Set up calculation parameters and state"""
         props = context.scene.collision_props
-        errors = []
-
-        # Check mesh selection
-        if not props.proximal_object:
-            errors.append("Proximal object not selected.")
-        if not props.distal_object:
-            errors.append("Distal object not selected.")
-        if props.proximal_object == props.distal_object:
-            errors.append("Proximal and distal objects must be different.")
-
-        # Check axis/joint selection (ACSf/ACSm can be blank, that's OK)
-        # If present, must be valid objects
-        if props.ACSf and not isinstance(props.ACSf, bpy.types.Object):
-            errors.append("Fixed (proximal) axis (ACSf) is not a valid object.")
-        if props.ACSm and not isinstance(props.ACSm, bpy.types.Object):
-            errors.append("Mobile (distal) axis (ACSm) is not a valid object.")
-
-        # Enforce that ACSm (distal axis) is specified for anatomical relevance
-        if not props.ACSm:
-            errors.append("Mobile (distal) axis (ACSm) must be specified for anatomical relevance.")
-
-        # If a bone is selected, ACSf/ACSm must be an armature
-        if props.rotational_bone and (not props.ACSf or props.ACSf.type != 'ARMATURE'):
-            errors.append("Fixed (proximal) bone selected, but ACSf is not an armature.")
-        if props.rotational_bone_2 and (not props.ACSm or props.ACSm.type != 'ARMATURE'):
-            errors.append("Mobile (distal) bone selected, but ACSm is not an armature.")
-
-        # Check rotation increments (should not be zero)
-        if props.rot_x_inc == 0 or props.rot_y_inc == 0 or props.rot_z_inc == 0:
-            errors.append("Rotation increments must not be zero.")
-
-        # Check that min <= max for all rotation axes
-        for axis in ['x', 'y', 'z']:
-            if getattr(props, f'rot_{axis}_min') > getattr(props, f'rot_{axis}_max'):
-                errors.append(f"Rotation {axis.upper()} min is greater than max.")
-
-        # If any errors, report and return False
-        if errors:
-            for err in errors:
-                self.report({'ERROR'}, err)
+        
+        # Validate input
+        if not props.proximal_object or not props.distal_object:
+            self.report({'ERROR'}, "Both proximal and distal objects must be selected")
+            return False
+          # Get the objects
+        prox_obj = props.proximal_object
+        dist_obj = props.distal_object
+        ACSf_obj = props.ACSf_object
+        ACSm_obj = props.ACSm_object
+        
+        if not ACSf_obj or not ACSm_obj:
+            self.report({'ERROR'}, "Both ACSf and ACSm objects must be selected")
             return False
 
-        # Store original pose for restoration later
-        self._original_pose = {}
-        distal_obj = props.distal_object
-        self._original_pose['location'] = distal_obj.location.copy()
-        self._original_pose['rotation_euler'] = distal_obj.rotation_euler.copy()
-        self._original_pose['rotation_mode'] = distal_obj.rotation_mode
-
-        # If using ACSm/ACSf armatures and bones, store their original pose as well
-        if props.ACSm and props.ACSm.type == 'ARMATURE' and props.rotational_bone_2:
-            pose_bone = props.ACSm.pose.bones.get(props.rotational_bone_2)
-            if pose_bone:
-                self._original_pose['ACSm_bone_location'] = pose_bone.location.copy()
-                self._original_pose['ACSm_bone_rotation'] = pose_bone.rotation_euler.copy()
-                self._original_pose['ACSm_bone_rotation_mode'] = pose_bone.rotation_mode
-        if props.ACSf and props.ACSf.type == 'ARMATURE' and props.rotational_bone:
-            pose_bone = props.ACSf.pose.bones.get(props.rotational_bone)
-            if pose_bone:
-                self._original_pose['ACSf_bone_location'] = pose_bone.location.copy()
-                self._original_pose['ACSf_bone_rotation'] = pose_bone.rotation_euler.copy()
-                self._original_pose['ACSf_bone_rotation_mode'] = pose_bone.rotation_mode
-
-        # Keyframe the original pose at frame 0
-        bpy.context.scene.frame_set(0)
-        distal_obj.keyframe_insert(data_path="location")
-        distal_obj.keyframe_insert(data_path="rotation_euler")
-        # Keyframe ACSm bone if relevant
-        if props.ACSm and props.ACSm.type == 'ARMATURE' and props.rotational_bone_2:
-            pose_bone = props.ACSm.pose.bones.get(props.rotational_bone_2)
-            if pose_bone:
-                pose_bone.keyframe_insert(data_path="location")
-                pose_bone.keyframe_insert(data_path="rotation_euler")
-        # Keyframe ACSf bone if relevant
-        if props.ACSf and props.ACSf.type == 'ARMATURE' and props.rotational_bone:
-            pose_bone = props.ACSf.pose.bones.get(props.rotational_bone)
-            if pose_bone:
-                pose_bone.keyframe_insert(data_path="location")
-                pose_bone.keyframe_insert(data_path="rotation_euler")
-
-        # Check if we're using hulls, and if so generate them
-        use_convex_hull = getattr(props, "use_convex_hull", False)
-        proximal_obj = props.proximal_object
-        distal_obj = props.distal_object
-
-        # Cache convex hull meshes in local space if needed
-        if use_convex_hull:
-            self._proximal_hull_mesh = self.generate_convex_hull_mesh(proximal_obj)
-            self._distal_hull_mesh = self.generate_convex_hull_mesh(distal_obj)
+        # Check for armature bone usage in ACSf
+        use_ACSf_bone = False
+        ACSf_bone_matrix = None
+        ACSf_bone_name = getattr(props, 'ACSf_bone', None)
+        if ACSf_obj and ACSf_obj.type == 'ARMATURE' and ACSf_bone_name:
+            ACSf_bone_matrix = self.get_bone_world_matrix(ACSf_obj, ACSf_bone_name)
+            use_ACSf_bone = ACSf_bone_matrix is not None
+            
+        # Check for armature bone usage in ACSm
+        use_ACSm_bone = False
+        ACSm_bone_matrix = None
+        ACSm_bone_name = getattr(props, 'ACSm_bone', None)
+        if ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name:
+            ACSm_bone_matrix = self.get_bone_world_matrix(ACSm_obj, ACSm_bone_name)
+            use_ACSm_bone = ACSm_bone_matrix is not None
+        
+        # Store original transformations for ACSf - this is our fixed reference point
+        if use_ACSf_bone:
+            self._orig_ACSf_bone_matrix = ACSf_bone_matrix.copy()
+            self._orig_ACSf_loc = None
+            self._orig_ACSf_rotation = None
+            self.report({'INFO'}, f"Using bone '{ACSf_bone_name}' as fixed ACS.")
         else:
-            self._proximal_mesh = proximal_obj.to_mesh()
-            self._distal_mesh = distal_obj.to_mesh()
+            self._orig_ACSf_loc = ACSf_obj.location.copy()
+            self._orig_ACSf_rotation = ACSf_obj.rotation_euler.copy()
+            self.report({'INFO'}, f"Fixed ACS starting from rotation: {[math.degrees(r) for r in self._orig_ACSf_rotation]}")
+            self.report({'INFO'}, f"Fixed ACS starting from location: {self._orig_ACSf_loc}")
+        
+        # Store original transformations for ACSm - this will be moved
+        if use_ACSm_bone:
+            self._orig_ACSm_bone_matrix = ACSm_bone_matrix.copy()
+            self._orig_ACSm_loc = None
+            self._orig_ACSm_rotation = None
+            self.report({'INFO'}, f"Using bone '{ACSm_bone_name}' as mobile ACS.")
+            # For completeness, store initial local matrix of the pose bone
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+            if pose_bone:
+                self._initial_ACSm_bone_matrix_local = pose_bone.matrix.copy()
+        else:
+            self._orig_ACSm_loc = ACSm_obj.location.copy()
+            self._orig_ACSm_rotation = ACSm_obj.rotation_euler.copy()
+            self.report({'INFO'}, f"Mobile ACS starting from rotation: {[math.degrees(r) for r in self._orig_ACSm_rotation]}")
+            self.report({'INFO'}, f"Mobile ACS starting from location: {self._orig_ACSm_loc}")
+            # Store initial local matrix of ACSm_obj
+            self._initial_ACSm_matrix_local = ACSm_obj.matrix_local.copy()
 
+        # Store initial relative transform of ACSm to ACSf (object or bone)
+        mat_ACSf_world_initial = ACSf_bone_matrix.copy() if use_ACSf_bone else ACSf_obj.matrix_world.copy()
+        mat_ACSm_world_initial = ACSm_bone_matrix.copy() if use_ACSm_bone else ACSm_obj.matrix_world.copy()
+        self._initial_relative_ACSm_to_ACSf_matrix = mat_ACSf_world_initial.inverted() @ mat_ACSm_world_initial
+
+        # Keyframe the starting position at frame 0
+        if use_ACSm_bone:
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+            if pose_bone:
+                pose_bone.keyframe_insert(data_path="location", frame=0)
+                pose_bone.keyframe_insert(data_path="rotation_euler", frame=0)
+        else:
+            ACSm_obj.keyframe_insert(data_path="location", frame=0)
+            ACSm_obj.keyframe_insert(data_path="rotation_euler", frame=0)
+        
+        # Create rotation range lists - these are RELATIVE to the current rotation
+        self._rot_x_range = np.arange(props.rot_x_min, props.rot_x_max + props.rot_x_inc, props.rot_x_inc).tolist()
+        self._rot_y_range = np.arange(props.rot_y_min, props.rot_y_max + props.rot_y_inc, props.rot_y_inc).tolist()
+        self._rot_z_range = np.arange(props.rot_z_min, props.rot_z_max + props.rot_z_inc, props.rot_z_inc).tolist()
+        
+        # Create translation range lists - these are RELATIVE to the current location
+        self._trans_x_range = np.arange(props.trans_x_min, props.trans_x_max + props.trans_x_inc, props.trans_x_inc).tolist()
+        self._trans_y_range = np.arange(props.trans_y_min, props.trans_y_max + props.trans_y_inc, props.trans_y_inc).tolist()
+        self._trans_z_range = np.arange(props.trans_z_min, props.trans_z_max + props.trans_z_inc, props.trans_z_inc).tolist()
+        
+        # Make sure we have at least one value in each range
+        if len(self._rot_x_range) == 0: self._rot_x_range = [props.rot_x_min]
+        if len(self._rot_y_range) == 0: self._rot_y_range = [props.rot_y_min]
+        if len(self._rot_z_range) == 0: self._rot_z_range = [props.rot_z_min]
+        if len(self._trans_x_range) == 0: self._trans_x_range = [props.trans_x_min]
+        if len(self._trans_y_range) == 0: self._trans_y_range = [props.trans_y_min]
+        if len(self._trans_z_range) == 0: self._trans_z_range = [props.trans_z_min]
+        
         # Calculate total iterations for progress reporting
-        # Build rotation and translation ranges for progress calculation
-        self._rot_x_range = np.arange(props.rot_x_min, props.rot_x_max + props.rot_x_inc, props.rot_x_inc)
-        self._rot_y_range = np.arange(props.rot_y_min, props.rot_y_max + props.rot_y_inc, props.rot_y_inc)
-        self._rot_z_range = np.arange(props.rot_z_min, props.rot_z_max + props.rot_z_inc, props.rot_z_inc)
-        self._trans_x_range = np.arange(props.trans_x_min, props.trans_x_max + props.trans_x_inc, props.trans_x_inc)
-        self._trans_y_range = np.arange(props.trans_y_min, props.trans_y_max + props.trans_y_inc, props.trans_y_inc)
-        self._trans_z_range = np.arange(props.trans_z_min, props.trans_z_max + props.trans_z_inc, props.trans_z_inc)
         self._total_iterations = len(self._rot_x_range) * len(self._rot_y_range) * len(self._rot_z_range) * \
-                                len(self._trans_x_range) * len(self._trans_y_range) * len(self._trans_z_range)
+                           len(self._trans_x_range) * len(self._trans_y_range) * len(self._trans_z_range)
+        
+        # Prepare CSV data
+        self._csv_data = [["rot_x", "rot_y", "rot_z", "trans_x", "trans_y", "trans_z", "Valid_pose"]]
+        
+        # Prepare data for object attributes if enabled
+        self._collision_data = []
+        
+        # Initialize progress counter
         self._completed_iterations = 0
+        
+        # Pre-calculate the BVH tree for the proximal object (which doesn't move)
+        # This is a major optimization as we only need to calculate it once
+        self.report({'INFO'}, "Pre-calculating BVH tree for proximal object...")
+        if prox_obj:
+            self._prox_bvh = self.create_bvh_tree(prox_obj) # Use the main prox_obj for its own BVH
+            if not self._prox_bvh:
+                self.report({'ERROR'}, "Failed to create BVH tree for proximal object. Aborting calculation.")
+                props.is_calculating = False
+                self._is_initialized = False 
+                return # Exit initialize_calculation early
+        else:
+            self.report({'ERROR'}, "Proximal object not set. Aborting calculation.")
+            props.is_calculating = False
+            self._is_initialized = False
+            return # Exit initialize_calculation early
+        
+        # Initialize proximal hull and its BVH if optimization is enabled
+        if props.use_convex_hull_optimization:
+            self.report({'INFO'}, "Pre-calculating convex hull and BVH for proximal object...")
+            if self._prox_hull_obj is None: # Check if already created
+                self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
+            
+            if self._prox_hull_obj and self._prox_hull_bvh is None: # Check if BVH already created
+                 self._prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
+
+            if not self._prox_hull_obj or not self._prox_hull_bvh:
+                self.report({'WARNING'}, "Failed to create convex hull or its BVH for proximal object. Convex hull optimization will be less effective or disabled for prox.")
+                # Continue without hull if it fails, check_collision will handle it or fall back
+
+        self._is_initialized = True
+        self._start_time = time.time()
+        
+        # Ensure cached hull attributes are reset for a new calculation run
+        if hasattr(self, '_prox_hull_obj') and self._prox_hull_obj:
+            if self._prox_hull_obj.name in bpy.data.objects: # Check if it still exists
+                self.remove_temp_object(self._prox_hull_obj)
+        self._prox_hull_obj = None
+        self._prox_hull_bvh = None # BVH trees are just Python objects, no Blender data to remove directly
+        
+        # Initialize index trackers for iteration
+        self._cur_x_idx = 0
+        self._cur_y_idx = 0
+        self._cur_z_idx = 0
+        self._cur_tx_idx = 0
+        self._cur_ty_idx = 0
+        self._cur_tz_idx = 0
+        
+        # Set initialization flag
+        self._is_initialized = True
+        self._is_finished = False
+        
+        # Add a counter for non-collision keyframes
+        self._non_collision_frame = 1
+        
+        # Update UI to show progress
         props.calculation_progress = 0.0
         props.is_calculating = True
-        props.time_remaining = ""
-
-        # Initialize any other state needed for the calculation here
-        # (e.g., progress counters, CSV data, etc.)
-        self._csv_data = [[
-            'rot_x', 'rot_y', 'rot_z',
-            'trans_x', 'trans_y', 'trans_z',
-            'valid_pose']
-        ]
-        self._valid_pose_count = 0
-        self._total_pose_count = 0
-        self._start_time = time.time()
-
-        return True
-
-    def generate_convex_hull_mesh(self, obj):
-        """Return a mesh (bpy.types.Mesh) that is the convex hull of the given object's mesh, in local space."""
-        mesh = obj.to_mesh()
-        bm = bmesh.new()
-        bm.from_mesh(mesh)
-        bmesh.ops.convex_hull(bm, input=bm.verts)
-        hull_mesh = bpy.data.meshes.new(name=f"{obj.name}_ConvexHull")
-        bm.to_mesh(hull_mesh)
-        bm.free()
-        bpy.data.meshes.remove(mesh)
-        return hull_mesh
-
-    def get_transformed_vertices(self, mesh, matrix):
-        """Return a list of mesh vertices transformed by the given matrix."""
-        return [matrix @ v.co for v in mesh.vertices]
-
-
-
-    def generate_pose_sequence(self, context):
-        """Yield all rotation pose parameter sets in the desired order (neutral->max, then neutral->min for each axis)."""
-        props = context.scene.collision_props
-        # Build rotation and translation ranges
-        rot_x_range = np.arange(props.rot_x_min, props.rot_x_max + props.rot_x_inc, props.rot_x_inc)
-        rot_y_range = np.arange(props.rot_y_min, props.rot_y_max + props.rot_y_inc, props.rot_y_inc)
-        rot_z_range = np.arange(props.rot_z_min, props.rot_z_max + props.rot_z_inc, props.rot_z_inc)
-        trans_x_range = np.arange(props.trans_x_min, props.trans_x_max + props.trans_x_inc, props.trans_x_inc)
-        trans_y_range = np.arange(props.trans_y_min, props.trans_y_max + props.trans_y_inc, props.trans_y_inc)
-        trans_z_range = np.arange(props.trans_z_min, props.trans_z_max + props.trans_z_inc, props.trans_z_inc)
-
-        def sweep_axis(axis_range):
-            zero = 0
-            max_vals = [v for v in axis_range if v > zero]
-            min_vals = [v for v in axis_range if v < zero]
-            return [zero] + max_vals + min_vals
-
-        x_sweep = sweep_axis(rot_x_range)
-        y_sweep = sweep_axis(rot_y_range)
-        z_sweep = sweep_axis(rot_z_range)
-        for x in x_sweep:
-            for y in y_sweep:
-                for z in z_sweep:
-                    for tx in trans_x_range:
-                        for ty in trans_y_range:
-                            for tz in trans_z_range:
-                                yield {
-                                    'rot_x': x,
-                                    'rot_y': y,
-                                    'rot_z': z,
-                                    'trans_x': tx,
-                                    'trans_y': ty,
-                                    'trans_z': tz
-                                }
         
-    def get_anatomical_axes(self, context):
-        """
-        Compute anatomical axes for rotation based on ACSf and ACSm.
-        Returns a dict with 'x', 'y', 'z' as normalized mathutils.Vector in world space.
-        """
+        self._start_time = time.time()
+        
+        return True
+    
+    def process_batch(self, context):
+        """Process a batch of calculations"""
         props = context.scene.collision_props
-        ACSf = props.ACSf
-        ACSm = props.ACSm
+        
+        if not self._is_initialized or self._is_finished:
+            return False
+        
+        # Use the configurable batch size
+        batch_size = props.batch_size
+        
+        # Get the objects
+        prox_obj = props.proximal_object
+        dist_obj = props.distal_object
+        ACSf_obj = props.ACSf_object
+        ACSm_obj = props.ACSm_object
+        ACSf_bone_name = getattr(props, 'ACSf_bone', None)
+        ACSm_bone_name = getattr(props, 'ACSm_bone', None)
+        use_ACSf_bone = ACSf_obj and ACSf_obj.type == 'ARMATURE' and ACSf_bone_name
+        use_ACSm_bone = ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name
+        
+        # Store original transformations for restoration at end if using scene updates
+        orig_ACSm_loc = ACSm_obj.location.copy() if not use_ACSm_bone else None
+        orig_ACSm_rot = ACSm_obj.rotation_euler.copy() if not use_ACSm_bone else None
+        
+        # Process a batch of iterations
+        batch_counter = 0
+        last_view_update = 0
+        
+        while batch_counter < batch_size:
+            # Check if we need to stop
+            if not props.is_calculating:
+                self.report({'INFO'}, "Calculation cancelled by user")
+                self.finalize_calculation(context, cancelled=True)
+                return False
+            
+            # Get current indices and values
+            if self._cur_x_idx >= len(self._rot_x_range):
+                self._is_finished = True
+                break
+                
+            rot_x = self._rot_x_range[self._cur_x_idx]  # X-axis (long axis rotation) from ACSm
+            rot_y = self._rot_y_range[self._cur_y_idx]  # Y-axis (adduction/abduction) calculated
+            rot_z = self._rot_z_range[self._cur_z_idx]  # Z-axis (flexion/extension) from ACSf
+            trans_x = self._trans_x_range[self._cur_tx_idx]
+            trans_y = self._trans_y_range[self._cur_ty_idx]
+            trans_z = self._trans_z_range[self._cur_tz_idx]
 
-        # Z: ACSf's Z axis in world space (flexion/extension)
-        Z = ACSf.matrix_world.to_3x3() @ mathutils.Vector((0, 0, 1))
-        # X: ACSm's X axis in world space (long axis of distal segment)
-        X = ACSm.matrix_world.to_3x3() @ mathutils.Vector((1, 0, 0))
-        # Y: perpendicular to both (ad/abduction axis)
-        Y = Z.cross(X)
-        if Y.length == 0:
-            # Fallback: use ACSm's local Y in world space
-            Y = ACSm.matrix_world.to_3x3() @ mathutils.Vector((0, 1, 0))
-        return {
-            'x': X.normalized(),
-            'y': Y.normalized(),
-            'z': Z.normalized()
-        }
+            # Calculate FE + AD/AB rotation increment (JCS, local to ACSf)
+            jcs_rotation_increment_local_to_ACSf = self.calculate_acs_rotation(
+                context, ACSf_obj, ACSm_obj, rot_x, rot_y, rot_z
+            )
 
-    def apply_pose(self, context, pose_params):
-        """Apply the given pose (rotations) to the distal object using ACSm and ACSf as reference axes."""
-        props = context.scene.collision_props
-        distal_obj = props.distal_object
-        axes = self.get_anatomical_axes(context)
-        origin = props.ACSm.matrix_world.translation
-
-        # Convert degrees to radians
-        rx = math.radians(pose_params['rot_x'])
-        ry = math.radians(pose_params['rot_y'])
-        rz = math.radians(pose_params['rot_z'])
-
-        # Build rotation matrices (order: Z, then Y, then X)
-        Rz = mathutils.Matrix.Rotation(rz, 4, axes['z'])
-        Ry = mathutils.Matrix.Rotation(ry, 4, axes['y'])
-        Rx = mathutils.Matrix.Rotation(rx, 4, axes['x'])
-
-        # Compose the rotation: R = Rz @ Ry @ Rx
-        R = Rz @ Ry @ Rx
-
-        # Apply rotation about ACSm origin
-        # Move to origin, rotate, move back
-        T_neg = mathutils.Matrix.Translation(-origin)
-        T_pos = mathutils.Matrix.Translation(origin)
-        new_matrix = T_pos @ R @ T_neg @ distal_obj.matrix_world
-
-        # Apply translation from pose_params
-        translation = mathutils.Vector((
-            pose_params.get('trans_x', 0.0),
-            pose_params.get('trans_y', 0.0),
-            pose_params.get('trans_z', 0.0)
-        ))
-        new_matrix.translation += translation
-
-        distal_obj.matrix_world = new_matrix
-        pass
-
-    def check_collision(self, context):
-        """Check for collision between the proximal and distal objects using BVH and optional convex hull pre-check."""
-        props = context.scene.collision_props
-        use_convex_hull = getattr(props, "use_convex_hull", False)
-        proximal_obj = props.proximal_object
-        distal_obj = props.distal_object
-
-        if use_convex_hull:
-            # Transform hull vertices to world space for current pose
-            prox_verts = self.get_transformed_vertices(self._proximal_hull_mesh, proximal_obj.matrix_world)
-            dist_verts = self.get_transformed_vertices(self._distal_hull_mesh, distal_obj.matrix_world)
-            # Build temporary meshes for BVH
-            prox_temp = bpy.data.meshes.new("ProxTemp")
-            dist_temp = bpy.data.meshes.new("DistTemp")
-            prox_temp.from_pydata(prox_verts, [], [f.vertices for f in self._proximal_hull_mesh.polygons])
-            dist_temp.from_pydata(dist_verts, [], [f.vertices for f in self._distal_hull_mesh.polygons])
-            prox_bvh = mathutils.bvhtree.BVHTree.FromMesh(prox_temp)
-            dist_bvh = mathutils.bvhtree.BVHTree.FromMesh(dist_temp)
-            overlap = prox_bvh.overlap(dist_bvh)
-            bpy.data.meshes.remove(prox_temp)
-            bpy.data.meshes.remove(dist_temp)
-            return bool(overlap)
-        else:
-            # Use full mesh, transform to world space for current pose
-            dist_verts = self.get_transformed_vertices(self._distal_mesh, distal_obj.matrix_world)
-            prox_verts = self.get_transformed_vertices(self._proximal_mesh, proximal_obj.matrix_world)
-            prox_temp = bpy.data.meshes.new("ProxTemp")
-            dist_temp = bpy.data.meshes.new("DistTemp")
-            prox_temp.from_pydata(prox_verts, [], [f.vertices for f in self._proximal_mesh.polygons])
-            dist_temp.from_pydata(dist_verts, [], [f.vertices for f in self._distal_mesh.polygons])
-            prox_bvh = mathutils.bvhtree.BVHTree.FromMesh(prox_temp)
-            dist_bvh = mathutils.bvhtree.BVHTree.FromMesh(dist_temp)
-            overlap = prox_bvh.overlap(dist_bvh)
-            bpy.data.meshes.remove(prox_temp)
-            bpy.data.meshes.remove(dist_temp)
-            return bool(overlap)
-
-    def record_result(self, context, pose_params, is_valid):
-        """Record the result (CSV, keyframe if valid, etc)."""
-        # Record the pose parameters and validity in the CSV data
-        row = [
-            pose_params.get('rot_x', 0.0),
-            pose_params.get('rot_y', 0.0),
-            pose_params.get('rot_z', 0.0),
-            pose_params.get('trans_x', 0.0),
-            pose_params.get('trans_y', 0.0),
-            pose_params.get('trans_z', 0.0),
-            int(is_valid)
-        ]
-        self._csv_data.append(row)
-        self._total_pose_count += 1
-        if is_valid:
-            self._valid_pose_count += 1
-            props = context.scene.collision_props
-            distal_obj = props.distal_object
-            # Insert keyframes for the distal object
-            distal_obj.keyframe_insert(data_path="location")
-            distal_obj.keyframe_insert(data_path="rotation_euler")
-            # If distal object is an armature and a bone is specified, keyframe the bone
-            if props.ACSm and props.ACSm.type == 'ARMATURE' and props.rotational_bone_2:
-                pose_bone = props.ACSm.pose.bones.get(props.rotational_bone_2)
+            # Apply rotation to ACSm (mobile object)
+            if use_ACSm_bone:
+                pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
                 if pose_bone:
-                    pose_bone.keyframe_insert(data_path="location")
-                    pose_bone.keyframe_insert(data_path="rotation_euler")
+                    # For completeness, if ACSm is a bone
+                    pose_bone.matrix = self._initial_ACSm_bone_matrix_local @ jcs_rotation_increment_local_to_ACSf
+                    # # Apply translations if needed (commented out for now)
+                    # pose_bone.location = mathutils.Vector((trans_x, trans_y, trans_z))
+                    context.view_layer.update()
+            else:
+                # ACSm is an object: apply rotation in local space
+                ACSm_obj.matrix_local = self._initial_ACSm_matrix_local @ jcs_rotation_increment_local_to_ACSf
+                # # Apply translations if needed (commented out for now)
+                # ACSm_obj.location = self._orig_ACSm_loc + mathutils.Vector((trans_x, trans_y, trans_z))
+                context.view_layer.update()
 
-    def restore_original_pose(self, context):
-        """Restore the distal object to its original pose after calculation."""
-        # Restore the distal object's original pose
-        props = context.scene.collision_props
-        distal_obj = props.distal_object
-        orig = self._original_pose
-        distal_obj.location = orig['location'].copy()
-        distal_obj.rotation_euler = orig['rotation_euler'].copy()
-        distal_obj.rotation_mode = orig['rotation_mode']
-        # Restore ACSm bone if relevant
-        if props.ACSm and props.ACSm.type == 'ARMATURE' and props.rotational_bone_2:
-            pose_bone = props.ACSm.pose.bones.get(props.rotational_bone_2)
+            # Check for collision using the pre-calculated proximal BVH tree
+            collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
+            
+            # Record data for CSV export
+            self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 0 if collision else 1]) #Changed so that 0 is collision and 1 is valid pose.
+            
+            # If pose is collision-free, insert keyframes immediately
+            if not collision:
+                if props.visualize_collisions:
+                    if use_ACSm_bone:
+                        pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+                        if pose_bone:
+                            pose_bone.keyframe_insert(data_path="location", frame=self._non_collision_frame)
+                            pose_bone.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
+                    else:
+                        ACSm_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
+                        ACSm_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
+                self._non_collision_frame += 1
+            
+            # Increment indices using more efficient approach
+            self._cur_tz_idx += 1
+            if self._cur_tz_idx >= len(self._trans_z_range):
+                self._cur_tz_idx = 0
+                self._cur_ty_idx += 1
+                if self._cur_ty_idx >= len(self._trans_y_range):
+                    self._cur_ty_idx = 0
+                    self._cur_tx_idx += 1
+                    if self._cur_tx_idx >= len(self._trans_x_range):
+                        self._cur_tx_idx = 0
+                        self._cur_z_idx += 1
+                        if self._cur_z_idx >= len(self._rot_z_range):
+                            self._cur_z_idx = 0
+                            self._cur_y_idx += 1
+                            if self._cur_y_idx >= len(self._rot_y_range):
+                                self._cur_y_idx = 0
+                                self._cur_x_idx += 1
+                                if self._cur_x_idx >= len(self._rot_x_range):
+                                    self._is_finished = True
+                                    break
+            
+            # Update progress counter
+            self._completed_iterations += 1
+            batch_counter += 1
+            
+            # Update progress in the UI 
+            if self._total_iterations > 0:
+                progress_pct = (self._completed_iterations / self._total_iterations) * 100
+                props.calculation_progress = progress_pct
+                # Time remaining estimate
+                if self._completed_iterations > 0 and self._start_time:
+                    elapsed = time.time() - self._start_time
+                    if elapsed > 0:
+                        rate = self._completed_iterations / elapsed
+                        remaining = (self._total_iterations - self._completed_iterations) / rate if rate > 0 else 0
+                    else:
+                        remaining = 0
+                    mins, secs = divmod(int(remaining), 60)
+                    props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
+                else:
+                    props.time_remaining = "Calculating..."
+                
+                # Periodically update view for better user feedback
+                if (batch_counter % 25 == 0):
+                    for area in context.screen.areas:
+                        if area.type == 'VIEW_3D':
+                            area.tag_redraw()
+        
+        # Always restore original position and update
+        if use_ACSm_bone:
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
             if pose_bone:
-                pose_bone.location = orig.get('ACSm_bone_location', pose_bone.location).copy()
-                pose_bone.rotation_euler = orig.get('ACSm_bone_rotation', pose_bone.rotation_euler).copy()
-                pose_bone.rotation_mode = orig.get('ACSm_bone_rotation_mode', pose_bone.rotation_mode)
-        # Restore ACSf bone if relevant
-        if props.ACSf and props.ACSf.type == 'ARMATURE' and props.rotational_bone:
-            pose_bone = props.ACSf.pose.bones.get(props.rotational_bone)
-            if pose_bone:
-                pose_bone.location = orig.get('ACSf_bone_location', pose_bone.location).copy()
-                pose_bone.rotation_euler = orig.get('ACSf_bone_rotation', pose_bone.rotation_euler).copy()
-                pose_bone.rotation_mode = orig.get('ACSf_bone_rotation_mode', pose_bone.rotation_mode)
-
-    def write_csv(self, context):
+                pose_bone.location = mathutils.Vector((0,0,0))
+                pose_bone.rotation_euler = mathutils.Euler((0,0,0), props.rot_order)
+                context.view_layer.update()
+        elif orig_ACSm_loc is not None and orig_ACSm_rot is not None:
+            self.restore_object_transform(ACSm_obj, orig_ACSm_loc, orig_ACSm_rot)
+            context.view_layer.update()
+        
+        # Check if we're done
+        if self._is_finished:
+            self.finalize_calculation(context)
+            return False
+            
+        return True
+    
+    def finalize_calculation(self, context, cancelled=False):
+        """Complete the calculation and process results"""
         props = context.scene.collision_props
-        csv_path = getattr(props, 'export_path', None)
-        if not csv_path:
-            self.report({'ERROR'}, "No CSV output path specified.")
-            return
-        try:
-            with open(bpy.path.abspath(csv_path), 'w', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerows(self._csv_data)
-            self.report({'INFO'}, f"Results written to {csv_path}")
-        except Exception as e:
-            self.report({'ERROR'}, f"Failed to write CSV: {e}")
+        
+        # Reset ACSm object to original position
+        ACSm_obj = props.ACSm_object
+        ACSm_bone_name = getattr(props, 'ACSm_bone', None)
+        use_ACSm_bone = ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name
+        
+        if use_ACSm_bone:
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+            if pose_bone:
+                pose_bone.location = mathutils.Vector((0,0,0))
+                pose_bone.rotation_euler = mathutils.Euler((0,0,0), props.rot_order)
+                context.view_layer.update()
+        elif hasattr(self, '_orig_ACSm_loc') and hasattr(self, '_orig_ACSm_rotation'):
+            if self._orig_ACSm_loc is not None and self._orig_ACSm_rotation is not None:
+                self.restore_object_transform(ACSm_obj, self._orig_ACSm_loc, self._orig_ACSm_rotation)
+                context.view_layer.update()
+        
+        # Clean up the cached proximal hull object and its BVH
+        if hasattr(self, '_prox_hull_obj') and self._prox_hull_obj:
+            if self._prox_hull_obj.name in bpy.data.objects: # Check if it still exists
+                self.remove_temp_object(self._prox_hull_obj)
+            self._prox_hull_obj = None
+        # BVH trees are Python objects; they are garbage collected. No specific Blender data to remove for _prox_hull_bvh itself.
+        self._prox_hull_bvh = None 
 
-    # Add more helpers as needed for modularity.
-
-
+        if not cancelled:
+            # Export CSV
+            if props.export_to_csv and props.export_path:
+                filepath = bpy.path.abspath(props.export_path)
+                dirpath = os.path.dirname(filepath)
+                
+                # Only create directories if there's actually a directory path
+                if dirpath:
+                    os.makedirs(dirpath, exist_ok=True)
+                
+                with open(filepath, 'w', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerows(self._csv_data)
+                
+                self.report({'INFO'}, f"Collision data exported to {filepath}")
+            
+            # Removed separate keyframe operator call.
+            self.report({'INFO'}, f"Inserted {self._non_collision_frame-1} keyframes on collision-free poses")
+        
+        # Output total time taken
+        if self._start_time:
+            elapsed = time.time() - self._start_time
+            mins, secs = divmod(int(elapsed), 60)
+            self.report({'INFO'}, f"Total time taken: {mins:02d}:{secs:02d}")
+          # Reset calculation state
+        props.is_calculating = False
+        props.calculation_progress = 0.0
+        self._is_initialized = False
+        self._is_finished = True
+        
+        # Clear references to temporary objects
+        self._prox_bvh = None
+        if hasattr(self, '_orig_ACSf_loc'):
+            self._orig_ACSf_loc = None
+        if hasattr(self, '_orig_ACSf_rotation'):
+            self._orig_ACSf_rotation = None
+        if hasattr(self, '_orig_ACSf_bone_matrix'):
+            self._orig_ACSf_bone_matrix = None
+        if hasattr(self, '_orig_ACSm_loc'):
+            self._orig_ACSm_loc = None
+        if hasattr(self, '_orig_ACSm_rotation'):
+            self._orig_ACSm_rotation = None
+        if hasattr(self, '_orig_ACSm_bone_matrix'):
+            self._orig_ACSm_bone_matrix = None
+        
+        return
+    
+    def modal(self, context, event):
+        """Modal function called during calculation"""
+        props = context.scene.collision_props
+        
+        # Check if calculation is still active
+        if not props.is_calculating:
+            self.cancel(context)
+            return {'CANCELLED'}
+            
+        # Check for timer event to process next batch
+        if event.type == 'TIMER':
+            # Process a batch of calculations
+            if not self.process_batch(context):
+                # If process_batch returns False, we're done or cancelled
+                self.cancel(context)
+                return {'FINISHED'}
+            
+            # Force UI redraw to update progress bar
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+        
+        return {'PASS_THROUGH'}
+    
+    def execute(self, context):
+        """Start the calculation process"""
+        props = context.scene.collision_props
+        
+        # Check if a calculation is already in progress
+        if props.is_calculating:
+            self.report({'WARNING'}, "A calculation is already in progress")
+            return {'CANCELLED'}
+            
+        # Ensure we are in Object Mode before starting calculations
+        if bpy.ops.object.mode_set.poll():
+            bpy.ops.object.mode_set(mode='OBJECT')
+            
+        # Initialize the calculation
+        if not self.initialize_calculation(context):
+            return {'CANCELLED'}
+            
+        # Set up the modal timer
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.1, window=context.window)
+        wm.modal_handler_add(self)
+        
+        return {'RUNNING_MODAL'}
+    
+    def cancel(self, context):
+        """Clean up the modal operator"""
+        wm = context.window_manager
+        if self._timer:
+            wm.event_timer_remove(self._timer)
+            self._timer = None
+            
+        # If we were cancelled in the middle of a calculation,
+        # call finalize to clean up
+        if self._is_initialized and not self._is_finished:
+            self.finalize_calculation(context, cancelled=True)
 
