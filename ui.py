@@ -90,7 +90,8 @@ class COLLISION_PT_panel(Panel):
         # Translation parameters
         box = layout.box()
         box.label(text="Translation:")
-        
+        # Translation mode dropdown
+        box.prop(props, "translation_mode_enum", text="Translation Mode")
         # Add column headers for translation
         header_row = box.row(align=True)
         header_row.label(text="")  # Empty space for axis label

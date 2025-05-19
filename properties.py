@@ -236,6 +236,17 @@ class CollisionProperties(PropertyGroup):
         precision=4
     )
     
+    translation_mode_enum: EnumProperty(
+        name="Translation Mode",
+        description="Define how translational offsets are applied relative to the coordinate systems.",
+        items=[
+            ('SIMPLE_ACSf', "Simple (ACSf Local)", "Translations along ACSf's fixed local axes, applied before JCS rotation conceptually."),
+            ('ACSM_LOCAL_POST_ROT', "ACSm Local (Post-Rotation)", "Translations along ACSm's axes after all JCS rotations have been applied."),
+            ('MG_PRISM_HINGE', "M&G Prism (Hinge)", "Translations along M&G prism axes that rotate with Flexion/Extension (primarily for hinge joints). Assumes FE is rot_z.")
+        ],
+        default='ACSM_LOCAL_POST_ROT'
+    )
+    
     use_convex_hull_optimization: BoolProperty(
         name="Use Convex Hull Pre-Check",
         description="Enable to use a faster convex hull pre-check. WARNING: May give incorrect non-collision results if one object can be fully contained within the other. Disable for full accuracy in such cases.",

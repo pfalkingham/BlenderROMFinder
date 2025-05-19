@@ -1,88 +1,98 @@
 # Range of Motion (ROM) Finder for Blender
 
-This Blender addon is designed to find and record all possible poses where two selected objects (a "proximal" and a "distal" object) do not collide. It iterates through a defined range of rotations and translations, performing collision checks at each step.
+This Blender addon is designed to find and record all possible 6-DOF (Degrees of Freedom) poses where two selected objects (a "proximal" and a "distal" object) do not collide. It systematically iterates through user-defined ranges of JCS (Joint Coordinate System) rotations and various translational offsets, performing collision checks at each step. This tool is particularly useful for biomechanical studies, virtual paleontology, and robotics.
 
-**Video Tutorial:** [Watch on YouTube](https://youtu.be/sQL41YbC_TY) (Note: Video may not reflect the latest UI or features)
+**Video Tutorial:** [Watch on YouTube](https://youtu.be/sQL41YbC_TY) *(Note: Video may not reflect the latest UI or features)*
 
 ## Features
 
-*   Calculates collision-free poses based on user-defined rotation and translation ranges.
-*   Supports rotation around an object\'s origin or a specified bone in an armature.
-*   Outputs results to a CSV file.
-*   Optionally stores results as custom attributes on the rotational object.
-*   Optionally creates an animation layer (NLA strip) visualizing all non-colliding poses.
-*   Configurable performance settings.
+-   Calculates collision-free 6-DOF poses based on user-defined JCS rotation and translation ranges.
+-   Supports rotation and translation of a mobile coordinate system (`ACSm`) relative to a fixed coordinate system (`ACSf`), which can be objects or specific bones within armatures.
+-   **JCS Rotation Logic Modes:**
+    -   **ISB Standard:** Implements a Joint Coordinate System (e.g., Z-Y'-X'' sequence for Flexion/Extension, Adduction/Abduction, Long-Axis Rotation) where the Adduction/Abduction axis (Y') is a "floating" axis, perpendicular to both the FE axis and the mobile segment's long axis after FE. This aligns with common biomechanics standards (e.g., Grood & Suntay, 1983; Wu et al., 2002).
+    -   **Intuitive (Fixed Y for AD/AB):** Adduction/Abduction occurs around the fixed local Y-axis of the `ACSf` object/bone. This can be more visually intuitive for certain constrained joints.
+-   **Translation Application Modes:**
+    -   **Simple (ACSf Local):** Translations are applied along the fixed local axes of the `ACSf` object/bone. The JCS rotation then occurs from this translated position.
+    -   **ACSm Local (Post-Rotation):** Translations are applied along the axes of the `ACSm` object/bone *after* all JCS rotations for that pose have been applied. Useful for representing joint "play" at a specific orientation.
+    -   **M&G Prism (Hinge):** For hinge-like joints, translations are applied along the axes of a virtual prism (inspired by Manafzadeh & Gatesy, 2021) that rotates with the primary Flexion/Extension of the joint, ensuring anatomical consistency of translational terms (e.g., "distraction," "A-P glide") across the FE range.
+-   Outputs results (JCS angles, translations, collision status) to a CSV file.
+-   Optionally creates an animation layer (NLA strip) visualizing all non-colliding poses.
+-   Configurable performance settings, including batch size and convex hull pre-check.
+-   Progress bar and estimated time remaining during calculations.
+-   Ability to cancel calculations.
 
 ## Installation
 
 1.  Download the addon (ensure all files like `__init__.py`, `operators.py`, `properties.py`, `ui.py` are in a folder, e.g., `BlenderROMFinder`).
 2.  In Blender, go to `Edit > Preferences > Add-ons`.
-3.  Click `Install...` and navigate to the `.zip` file of the addon folder (or the `__init__.py` if installing from loose files, though zipping the folder is usually best).
+3.  Click `Install...` and navigate to the `.zip` file of the addon folder.
 4.  Enable the addon by checking the box next to its name ("Range of Motion Finder").
 
 ## How to Use
 
-The addon panel will appear in the 3D View sidebar (press `N` if hidden) under the "Collision" tab (or "ROM" depending on version).
+The addon panel appears in the 3D View sidebar (press `N` if hidden) under the "Collision" tab.
 
-### 1. Object Selection
+### 1. Setup Objects & Coordinate Systems
 
-*   **Proximal Object:** Select the object that is considered static or the base. Collisions will be checked against this object.
-*   **Distal Object:** Select the object that will be moved and rotated.
-*   **Rotational Object:**
-    *   If the `Distal Object` itself has the correct pivot point for rotation (e.g., you\'ve moved its origin to the desired joint center and applied transformations), set the `Distal Object` as the `Rotational Object`.
-    *   If the `Distal Object` is part of an armature and you want to rotate a specific bone, set the Armature object as the `Rotational Object`.
-*   **Rotational Bone:** If an Armature is selected as the `Rotational Object`, this dropdown will list its bones. Select the bone that will be rotated. The rotation will occur around this bone\'s head.
+-   **Proximal Object:** The static or base object against which collisions are checked.
+-   **Distal Object:** The moving object whose mesh is checked for collision with the Proximal Object.
+-   **ACS Fixed (ACSf):** An object (often an Empty or a bone) representing the fixed/proximal anatomical coordinate system. JCS Flexion/Extension (typically `rot_z`) will occur around this object's local Z-axis.
+-   **ACS Mobile (ACSm):** An object (often an Empty or a bone, typically parented to `ACSf`) representing the mobile/distal anatomical coordinate system. JCS Long-Axis Rotation (typically `rot_x`) will occur around this object's local X-axis after other rotations. The `Distal Object` should be parented or constrained to `ACSm` to follow its movements.
+-   **ACSf/ACSm Bone:** If `ACSf` or `ACSm` is an Armature, select the specific bone to define the coordinate system.
 
-### 2. Rotation Parameters
+*Initial Alignment:* For predictable JCS behavior, it's recommended that `ACSm` starts with its local axes aligned with `ACSf`'s local axes (i.e., `ACSm`'s `matrix_local` relative to `ACSf` is an identity matrix, or only has a translational component if their origins are offset). Visual offsets/rotations should be in their Delta Transforms.
 
-Define the range and increment for rotations around the X, Y, and Z axes of the `Rotational Object` (or `Rotational Bone`).
-*   **Min/Max (degrees):** The minimum and maximum rotation angles for each axis.
-*   **Step (degrees):** The increment for each rotational step.
-*   **Order:** The Euler rotation order (e.g., XYZ, ZYX). This defines the sequence in which rotations are applied.
-    *   **Important for Keyframes:** For the keyframed animation to display "clean" rotation values (e.g., 10, 20, 30 degrees) in Blender\'s UI, ensure the `Rotation Mode` of your `Rotational Object` (in Object Properties) or `Rotational Bone` (in Pose Mode > Bone Properties > Rotation Mode) matches the `Order` selected in this addon.
+### 2. Select Logic Modes
 
-### 3. Translation Parameters
+-   **Rotation Logic:** Choose between "ISB Standard" or "Intuitive (Fixed Y)".
+-   **Translation Mode:** Choose between "Simple (ACSf Local)", "ACSm Local (Post-Rotation)", or "M&G Prism (Hinge)".
 
-Define the range and increment for translations along the X, Y, and Z axes of the `Rotational Object` (or `Rotational Bone`).
-*   **Min/Max:** The minimum and maximum translation offsets.
-*   **Step:** The increment for each translational step.
-    *   Note: Translations are applied relative to the initial position of the rotational object/bone, in its local coordinate system after rotation.
+### 3. Rotation Parameters (JCS Component Angles)
 
-### 4. Output Settings
+Define the range and increment for the three JCS rotations. These are applied sequentially.
+-   **rot_z (Flexion/Extension):** Min/Max/Step in degrees.
+-   **rot_y (Adduction/Abduction):** Min/Max/Step in degrees.
+-   **rot_x (Long-Axis Rotation):** Min/Max/Step in degrees.
+-   **Order (Euler for Keyframing):** The Euler order used if keyframing the `ACSm` object's final `rotation_euler`. For best results in Blender's UI, match this to `ACSm`'s own rotation mode. *This does NOT define the JCS sequence itself, which is hardcoded as FE -> AD/AB -> LAR.*
 
-*   **Export to CSV:**
-    *   Enable to save the results to a CSV file.
-    *   **Export Path:** Specify the location and name for the CSV file. The CSV will contain the delta rotations, absolute world rotations, delta translations, and a "Valid\_pose" column (1 for no collision, 0 for collision).
-*   **Store as Attributes:**
-    *   Enable to store the collision data as custom attributes on the `Rotational Object`.
-    *   **Attribute Prefix:** A prefix for the names of the custom attributes (e.g., `collision_data`, `collision_count`).
-*   **Show Animation Layer:**
-    *   Enable to create keyframes for every non-colliding pose. These keyframes are applied to the `Rotational Object` or `Rotational Bone`.
-    *   An NLA (Non-Linear Animation) strip will be created to make it easy to view and manage the animation.
+### 4. Translation Parameters
 
-### 5. Performance Options
+Define the range and increment for translational offsets. Their meaning depends on the selected "Translation Mode".
+-   **trans_x, trans_y, trans_z:** Min/Max/Step in Blender units.
 
-*   **Batch Size:** The number of poses to calculate before updating the UI. Higher values can speed up the overall process but make the UI less responsive during calculation.
-*   **Use Convex Hull Pre-Check:**
-    *   Default: **Disabled**.
-    *   Enable to use a faster convex hull intersection test as an initial check. If the convex hulls of the objects don\'t overlap, the pose is quickly marked as non-colliding.
-    *   **WARNING:** This optimization can give incorrect non-collision results (false negatives) if one object can be fully contained within the other without their hulls intersecting. If you suspect this (e.g., a small object moving inside a larger, hollow object), **disable this option** for full accuracy using a direct mesh-to-mesh check.
+### 5. Output Settings
 
-### 6. Running the Calculation
+-   **Export to CSV:** Enable and specify path. The CSV will contain the input JCS `rot_x,y,z` and `trans_x,y,z` values, and a "Valid_pose" column (1 for no collision, 0 for collision).
+-   **Show Animation Layer:** Creates keyframes for the `ACSm` object/bone for every non-colliding pose. Viewable in the NLA Editor.
 
-*   Click **Calculate Collisions** to start the process.
-*   A progress bar and estimated time remaining will appear.
-*   Click **Cancel Calculation** to stop the process prematurely.
+### 6. Performance Options
 
-## Important Notes & Troubleshooting
+-   **Batch Size:** Number of poses per UI update.
+-   **Use Convex Hull Pre-Check:** Faster initial check, but disable if `Distal Object` can fit entirely inside `Proximal Object` without hulls intersecting.
 
-*   **"NOT HEAVILY TESTED":** This addon is under development. Please save your work before running extensive calculations.
-*   **Object Origins/Pivots:** The accuracy of rotation depends heavily on the correct placement of the `Rotational Object`\'s origin or the `Rotational Bone`\'s head.
-*   **Mesh Complexity:** Very high-poly meshes will take longer to process.
-*   **Rotation Mode Matching:** As mentioned, for clean keyframe values in the UI, match the object/bone `Rotation Mode` in Blender to the addon\'s `Order` setting.
-*   **Convex Hull for Contained Objects:** If one object can fit entirely inside another, disable the "Use Convex Hull Pre-Check" for accurate collision detection.
+### 7. Running the Calculation
+
+-   Click **Calculate Collisions**.
+-   Monitor progress. Click **Cancel Calculation** to stop.
+
+## Important Notes
+
+-   **JCS Sequence:** The addon internally applies JCS rotations in the order: 1st Flexion/Extension (`rot_z`), 2nd Adduction/Abduction (`rot_y`), 3rd Long-Axis Rotation (`rot_x`).
+-   **"Visual Twist":** The "ISB Standard" rotation logic can produce a "visual twist" (an apparent roll) when FE and AD/AB are combined, even if input LAR is zero. This is a mathematical property of such sequential rotations (Gimbal effect/coupling). The "Intuitive (Fixed Y)" mode reduces this for AD/AB.
+-   **M&G Prism Mode:** For the "M&G Prism (Hinge)" translation mode, the code currently uses example prism axes (ACSf local X, Y, Z). For accurate anatomical meaning (Distraction, AP-Glide, ML-Shift), these initial prism axis definitions within `operators.py` might need to be adjusted based on your specific `ACSf` setup for the hinge joint.
+-   **Delta Transforms:** It's recommended to use Delta Transforms (Ctrl+A > Apply to Deltas) for the initial visual setup of `ACSf` and `ACSm` if their main transform values need to be at identity/zero for the script's logic (especially for `ACSm`'s initial local matrix relative to `ACSf`).
+-   **Object Origins:** The origin of `ACSm` (or head of `ACSm_bone`) is crucial as it defines the point around which JCS rotations are conceptually applied and from which local translations (in "ACSm Local" mode) originate.
+-   **Experimental:** This addon implements complex biomechanical concepts. Always save your work and test with simple setups first.
+
+## Relevant Biomechanics References
+
+-   Grood, E. S., & Suntay, W. J. (1983). A joint coordinate system for the clinical description of three-dimensional motions: application to the knee. *Journal of Biomechanical Engineering*, 105(2), 136-144.
+-   Wu, G., Siegler, S., Allard, P., Kirtley, C., Leardini, A., Rosenbaum, D., ... & Stokes, I. (2002). ISB recommendation on definitions of joint coordinate system of various joints for the reporting of human joint motion—part I: ankle, hip, and spine. *Journal of Biomechanics*, 35(4), 543-548.
+-   Manafzadeh, A. R., & Gatesy, S. M. (2021). Paleobiological reconstructions of articular function require all six degrees of freedom. *Journal of Anatomy*, 239(6), 1516-1524. (For the prism translation concept).
 
 ## Known Issues / Future Ideas
-*   SDF (Signed Distance Fields) could be explored for more robust and potentially faster collision, especially for containment scenarios (pending Blender API developments).
+
+-   More sophisticated definition or UI for initial prism axes in "M&G Prism" translation mode.
+-   Explore SDF (Signed Distance Fields) for collision detection.
 
 Contributions and feedback are welcome!

@@ -379,91 +379,144 @@ class COLLISION_OT_calculate(Operator):
     def process_batch(self, context):
         """Process a batch of calculations"""
         props = context.scene.collision_props
-        
+        # Ensure Vector is available if not imported at the top of the file
+        # from mathutils import Vector (should be at the top of your file already)
+        # from mathutils import Matrix (should be at the top of your file already)
+
         if not self._is_initialized or self._is_finished:
             return False
         
-        # Use the configurable batch size
         batch_size = props.batch_size
         
-        # Get the objects
         prox_obj = props.proximal_object
         dist_obj = props.distal_object
         ACSf_obj = props.ACSf_object
         ACSm_obj = props.ACSm_object
-        ACSf_bone_name = getattr(props, 'ACSf_bone', None)
-        ACSm_bone_name = getattr(props, 'ACSm_bone', None)
-        use_ACSf_bone = ACSf_obj and ACSf_obj.type == 'ARMATURE' and ACSf_bone_name
-        use_ACSm_bone = ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name
+        ACSf_bone_name = getattr(props, 'ACSf_bone', None) # Your existing getattr
+        ACSm_bone_name = getattr(props, 'ACSm_bone', None) # Your existing getattr
+        use_ACSf_bone = ACSf_obj and ACSf_obj.type == 'ARMATURE' and ACSf_bone_name # Your existing check
+        use_ACSm_bone = ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name # Your existing check
         
         # Store original transformations for restoration at end if using scene updates
-        orig_ACSm_loc = ACSm_obj.location.copy() if not use_ACSm_bone else None
-        orig_ACSm_rot = ACSm_obj.rotation_euler.copy() if not use_ACSm_bone else None
+        # These are for the ACSm_obj itself if it's not a bone context for JCS application
+        orig_ACSm_loc_if_object = ACSm_obj.location.copy() if not use_ACSm_bone else None
+        orig_ACSm_rot_if_object = ACSm_obj.rotation_euler.copy() if not use_ACSm_bone else None
         
-        # Process a batch of iterations
         batch_counter = 0
-        last_view_update = 0
+        # last_view_update = 0 # This variable wasn't used in your uploaded code, can be removed if not needed
         
         while batch_counter < batch_size:
             # Check if we need to stop
             if not props.is_calculating:
                 self.report({'INFO'}, "Calculation cancelled by user")
                 self.finalize_calculation(context, cancelled=True)
-                return False
+                return False # Stop processing this batch
             
-            # Get current indices and values
+            # Check if all iterations are complete
             if self._cur_x_idx >= len(self._rot_x_range):
                 self._is_finished = True
-                break
+                break # Exit while loop, will go to finalize_calculation
                 
-            rot_x = self._rot_x_range[self._cur_x_idx]  # X-axis (long axis rotation) from ACSm
-            rot_y = self._rot_y_range[self._cur_y_idx]  # Y-axis (adduction/abduction) calculated
-            rot_z = self._rot_z_range[self._cur_z_idx]  # Z-axis (flexion/extension) from ACSf
+            # Get current JCS rotation angles and translation values from loop ranges
+            rot_x = self._rot_x_range[self._cur_x_idx]
+            rot_y = self._rot_y_range[self._cur_y_idx]
+            rot_z = self._rot_z_range[self._cur_z_idx]
             trans_x = self._trans_x_range[self._cur_tx_idx]
             trans_y = self._trans_y_range[self._cur_ty_idx]
             trans_z = self._trans_z_range[self._cur_tz_idx]
 
-            # Calculate FE + AD/AB rotation increment (JCS, local to ACSf)
-            jcs_rotation_increment_local_to_ACSf = self.calculate_acs_rotation(
+            # 1. Calculate the JCS ROTATIONAL matrix (local to ACSf)
+            jcs_orientation_matrix_local_to_ACSf = self.calculate_acs_rotation(
                 context, ACSf_obj, ACSm_obj, rot_x, rot_y, rot_z
             )
 
-            # Apply rotation to ACSm (mobile object)
+            # 2. Combine this with ACSm's initial local orientation to get the target rotated pose
+            if use_ACSm_bone:
+                initial_local_orientation_matrix = self._initial_ACSm_bone_matrix_local
+            else:
+                initial_local_orientation_matrix = self._initial_ACSm_matrix_local
+            
+            target_orientation_matrix_local = initial_local_orientation_matrix @ jcs_orientation_matrix_local_to_ACSf
+            
+            # --- START OF INTEGRATED TRANSLATION LOGIC ---
+            final_ACSm_pose_matrix_local = target_orientation_matrix_local.copy() # Start with the rotated pose
+
+            translation_mode = getattr(props, 'translation_mode_enum', 'SIMPLE_ACSf') # Default if prop not added yet
+
+            if translation_mode == 'SIMPLE_ACSf':
+                translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
+                initial_local_translation = initial_local_orientation_matrix.to_translation() # Get translation from initial local
+                final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
+
+            elif translation_mode == 'ACSM_LOCAL_POST_ROT':
+                translation_vector_local_to_rotated_ACSm = mathutils.Vector((trans_x, trans_y, trans_z))
+                local_translation_offset_matrix = mathutils.Matrix.Translation(translation_vector_local_to_rotated_ACSm)
+                final_ACSm_pose_matrix_local = final_ACSm_pose_matrix_local @ local_translation_offset_matrix
+            
+            elif translation_mode == 'MG_PRISM_HINGE':
+                # Define initial prism axes (local to ACSf). 
+                # TODO: These should ideally be user-configurable or derived more robustly.
+                initial_prism_axis_distraction_vec = mathutils.Vector((1, 0, 0)) # Example: ACSf local X
+                initial_prism_axis_ap_glide_vec    = mathutils.Vector((0, 1, 0)) # Example: ACSf local Y
+                initial_prism_axis_ml_shift_vec    = mathutils.Vector((0, 0, 1)) # Example: ACSf local Z (less common for ML)
+                                                                            # A more common ML for a knee might be its FE axis.
+                                                                            # Or derived as cross product of other two prism axes.
+
+                # Primary hinge rotation is assumed to be rot_z (FE around ACSf's local Z)
+                rot_mat_FE_only = mathutils.Matrix.Rotation(math.radians(rot_z), 4, mathutils.Vector((0,0,1)))
+
+                current_prism_axis_distraction = (rot_mat_FE_only @ initial_prism_axis_distraction_vec.to_4d()).to_3d()
+                current_prism_axis_ap_glide    = (rot_mat_FE_only @ initial_prism_axis_ap_glide_vec.to_4d()).to_3d()
+                current_prism_axis_ml_shift    = (rot_mat_FE_only @ initial_prism_axis_ml_shift_vec.to_4d()).to_3d()
+                # Ensure they remain unit vectors if they were initially (multiplication by rotation matrix preserves length)
+
+                translation_offset_in_ACSf_local_space = \
+                    (current_prism_axis_distraction * trans_x) + \
+                    (current_prism_axis_ap_glide    * trans_y) + \
+                    (current_prism_axis_ml_shift    * trans_z)
+                
+                initial_local_translation = initial_local_orientation_matrix.to_translation()
+                final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
+            
+            else: 
+                self.report({'WARNING'}, f"Unknown translation mode: {translation_mode}. Defaulting to SIMPLE_ACSf.")
+                translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
+                initial_local_translation = initial_local_orientation_matrix.to_translation()
+                final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
+            # --- END OF INTEGRATED TRANSLATION LOGIC ---
+
+            # Apply this final combined matrix to ACSm_obj (or its bone):
             if use_ACSm_bone:
                 pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
                 if pose_bone:
-                    # For completeness, if ACSm is a bone
-                    pose_bone.matrix = self._initial_ACSm_bone_matrix_local @ jcs_rotation_increment_local_to_ACSf
-                    # # Apply translations if needed (commented out for now)
-                    # pose_bone.location = mathutils.Vector((trans_x, trans_y, trans_z))
-                    context.view_layer.update()
+                    pose_bone.matrix = final_ACSm_pose_matrix_local 
             else:
-                # ACSm is an object: apply rotation in local space
-                ACSm_obj.matrix_local = self._initial_ACSm_matrix_local @ jcs_rotation_increment_local_to_ACSf
-                # # Apply translations if needed (commented out for now)
-                # ACSm_obj.location = self._orig_ACSm_loc + mathutils.Vector((trans_x, trans_y, trans_z))
-                context.view_layer.update()
+                ACSm_obj.matrix_local = final_ACSm_pose_matrix_local
+            
+            context.view_layer.update()
 
             # Check for collision using the pre-calculated proximal BVH tree
             collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
             
             # Record data for CSV export
-            self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 0 if collision else 1]) #Changed so that 0 is collision and 1 is valid pose.
+            self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 0 if collision else 1])
             
-            # If pose is collision-free, insert keyframes immediately
+            # Keyframing logic
             if not collision:
                 if props.visualize_collisions:
                     if use_ACSm_bone:
                         pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
                         if pose_bone:
+                            # Keyframe the bone's local location and rotation
                             pose_bone.keyframe_insert(data_path="location", frame=self._non_collision_frame)
                             pose_bone.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
                     else:
+                        # Keyframe the object's local location and rotation
                         ACSm_obj.keyframe_insert(data_path="location", frame=self._non_collision_frame)
                         ACSm_obj.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
                 self._non_collision_frame += 1
             
-            # Increment indices using more efficient approach
+            # Increment indices (your existing efficient logic)
             self._cur_tz_idx += 1
             if self._cur_tz_idx >= len(self._trans_z_range):
                 self._cur_tz_idx = 0
@@ -482,9 +535,11 @@ class COLLISION_OT_calculate(Operator):
                                 self._cur_x_idx += 1
                                 if self._cur_x_idx >= len(self._rot_x_range):
                                     self._is_finished = True
-                                    break
+                                    # No 'break' here, let the check at the start of the
+                                    # while loop or the batch_counter handle loop exit
+                                    # for the current batch. The _is_finished flag will
+                                    # terminate the overall processing.
             
-            # Update progress counter
             self._completed_iterations += 1
             batch_counter += 1
             
@@ -492,42 +547,56 @@ class COLLISION_OT_calculate(Operator):
             if self._total_iterations > 0:
                 progress_pct = (self._completed_iterations / self._total_iterations) * 100
                 props.calculation_progress = progress_pct
-                # Time remaining estimate
                 if self._completed_iterations > 0 and self._start_time:
                     elapsed = time.time() - self._start_time
-                    if elapsed > 0:
+                    if elapsed > 0: # Avoid division by zero if first batch is instant
                         rate = self._completed_iterations / elapsed
-                        remaining = (self._total_iterations - self._completed_iterations) / rate if rate > 0 else 0
+                        remaining_iterations = self._total_iterations - self._completed_iterations
+                        remaining_time_sec = remaining_iterations / rate if rate > 0 else 0
                     else:
-                        remaining = 0
-                    mins, secs = divmod(int(remaining), 60)
-                    props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
+                        remaining_time_sec = float('inf') if self._total_iterations > 0 else 0 # Show infinity if no time elapsed but work remains
+                    
+                    if remaining_time_sec == float('inf'):
+                        props.time_remaining = "Time remaining: Calculating..."
+                    else:
+                        mins, secs = divmod(int(remaining_time_sec), 60)
+                        props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
                 else:
                     props.time_remaining = "Calculating..."
                 
-                # Periodically update view for better user feedback
-                if (batch_counter % 25 == 0):
+                if (batch_counter % 25 == 0): # Your existing UI refresh
                     for area in context.screen.areas:
                         if area.type == 'VIEW_3D':
                             area.tag_redraw()
         
-        # Always restore original position and update
+        # Restore original position and update
+        # This resets ACSm_obj to its state BEFORE this batch, not its absolute initial state,
+        # which is correct for modal operation if it was being transformed for visualization.
+        # However, since we are setting ACSm_obj.matrix_local directly from _initial_...
+        # this restoration might not be strictly necessary here unless you have other
+        # UI updates that temporarily move it. For safety, it's okay.
         if use_ACSm_bone:
             pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
-            if pose_bone:
-                pose_bone.location = mathutils.Vector((0,0,0))
-                pose_bone.rotation_euler = mathutils.Euler((0,0,0), props.rot_order)
+            if pose_bone and hasattr(self, '_initial_ACSm_bone_matrix_local'): # Check if initial was stored
+                pose_bone.matrix = self._initial_ACSm_bone_matrix_local
+                # Resetting location/rotation_euler might be redundant if matrix is set
+                # pose_bone.location = mathutils.Vector((0,0,0))
+                # pose_bone.rotation_euler = mathutils.Euler((0,0,0), props.rot_order)
                 context.view_layer.update()
-        elif orig_ACSm_loc is not None and orig_ACSm_rot is not None:
-            self.restore_object_transform(ACSm_obj, orig_ACSm_loc, orig_ACSm_rot)
+        elif orig_ACSm_loc_if_object is not None and orig_ACSm_rot_if_object is not None:
+             # If ACSm is an object, restore its local transform to what it was before this batch run
+             # (or better, just set it to its _initial_ACSm_matrix_local state)
+            if hasattr(self, '_initial_ACSm_matrix_local'):
+                ACSm_obj.matrix_local = self._initial_ACSm_matrix_local
+            else: # Fallback to what you had if _initial_ACSm_matrix_local isn't available for some reason
+                 self.restore_object_transform(ACSm_obj, orig_ACSm_loc_if_object, orig_ACSm_rot_if_object)
             context.view_layer.update()
         
-        # Check if we're done
         if self._is_finished:
             self.finalize_calculation(context)
-            return False
+            return False # Done with all iterations
             
-        return True
+        return True # More batches to process
     
     def finalize_calculation(self, context, cancelled=False):
         """Complete the calculation and process results"""
