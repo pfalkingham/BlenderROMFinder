@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Range of Motion Finder",
-    "author": "Peter Falkingham, Andréas Jannel, Ben Griffin (Liverpool John Moores University)",
-    "version": (1, 9, 1),
+    "author": "Peter Falkingham, Andréas Jannel, Ben Griffin (Liverpool John Moores University), and gratuitious AI/LLMs",
+    "version": (2, 1, 0),
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > ROM",
     "description": "Find poses where two objects do not collide based on rotations and translations",
