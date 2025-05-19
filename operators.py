@@ -167,48 +167,43 @@ class COLLISION_OT_calculate(Operator):
                 return armature_obj.matrix_world @ pose_bone.matrix
         return None
 
-    def calculate_acs_rotation(self, context, ACSf_obj, ACSm_obj, rot_x, rot_y, rot_z):
-        """Calculate proper anatomical rotations based on ACSf and ACSm coordinate systems
-        
-        Parameters:
-        - ACSf_obj: The fixed anatomical coordinate system object
-        - ACSm_obj: The mobile anatomical coordinate system object
-        - rot_x: X rotation in degrees (long axis rotation)
-        - rot_y: Y rotation in degrees (adduction/abduction)
-        - rot_z: Z rotation in degrees (flexion/extension)
-        
-        Returns:
-        - Rotation matrix to apply to ACSm object
+    def calculate_acs_rotation(self, context, ACSf_obj, ACSm_obj, rot_x_degrees, rot_y_degrees, rot_z_degrees):
+        """Return a pure Flexion/Extension (FE) rotation matrix local to ACSf.
+        Only rot_z_degrees (FE) is used; others are ignored.
+        The returned matrix is a rotation about the local Z axis of ACSf.
         """
-        # Get the Z axis from ACSf (for flexion/extension)
-        # In Blender's local space, Z axis is (0,0,1) rotated by the object's rotation
-        z_axis = ACSf_obj.matrix_world.to_quaternion() @ mathutils.Vector((0, 0, 1))
-        z_axis.normalize()
-        
-        # Get the X axis from ACSm (for long axis rotation)
-        x_axis = ACSm_obj.matrix_world.to_quaternion() @ mathutils.Vector((1, 0, 0))
-        x_axis.normalize()
-        
-        # Calculate Y axis as the cross product of Z and X
-        # This gives us the adduction/abduction axis
-        y_axis = z_axis.cross(x_axis)
-        y_axis.normalize()
-        
-        # Recalculate X to ensure orthogonality (X = Y × Z)
-        x_axis = y_axis.cross(z_axis)
-        x_axis.normalize()
-        
-        # Create rotation matrices for each axis
-        rot_matrix_x = mathutils.Matrix.Rotation(math.radians(rot_x), 4, x_axis)
-        rot_matrix_y = mathutils.Matrix.Rotation(math.radians(rot_y), 4, y_axis)
-        rot_matrix_z = mathutils.Matrix.Rotation(math.radians(rot_z), 4, z_axis)
-        
-        # Combine rotations according to specified order
-        # For anatomical movement, typically Z is applied first (flexion/extension)
-        # Then Y (adduction/abduction), and finally X (long axis rotation)
-        final_rotation = rot_matrix_x @ rot_matrix_y @ rot_matrix_z
-        
-        return final_rotation
+        import mathutils
+        import math
+        from mathutils import Matrix, Vector
+
+        # Start with identity (ACSm aligned with ACSf)
+        current_transform_local_to_ACSf = Matrix.Identity(4)
+
+        # Flexion/Extension (FE)
+        axis_Z_FE_in_ACSf_local = Vector((0, 0, 1))
+        rot_mat_FE = Matrix.Rotation(math.radians(rot_z_degrees), 4, axis_Z_FE_in_ACSf_local)
+        current_transform_local_to_ACSf = current_transform_local_to_ACSf @ rot_mat_FE
+
+        # AD/AB axis: X of ACSm after FE, in ACSf local
+        axis_X_ACSm_in_ACSf_local_after_FE = current_transform_local_to_ACSf.col[0].to_3d().normalized()
+        #print("FE Axis (ACSf local Z):", axis_Z_FE_in_ACSf_local)
+        #print("ACSm X-axis after FE (in ACSf local):", axis_X_ACSm_in_ACSf_local_after_FE)
+
+        # AD/AB axis is cross product (Y = Z x X')
+        axis_Y_ADAB_in_ACSf_local = axis_Z_FE_in_ACSf_local.cross(axis_X_ACSm_in_ACSf_local_after_FE)
+        if axis_Y_ADAB_in_ACSf_local.length < 1e-8:
+            axis_Y_ADAB_in_ACSf_local = Vector((0, 1, 0))
+        else:
+            axis_Y_ADAB_in_ACSf_local.normalize()
+
+        rot_mat_ADAB = Matrix.Rotation(math.radians(rot_y_degrees), 4, axis_Y_ADAB_in_ACSf_local)
+        current_transform_local_to_ACSf = current_transform_local_to_ACSf @ rot_mat_ADAB
+
+        # Now apply the X-axis rotation (long axis rotation)
+        rot_mat_LAR_local_to_new_ACSm_frame = Matrix.Rotation(math.radians(rot_x_degrees), 4, Vector((1, 0, 0)))
+        current_transform_local_to_ACSf = current_transform_local_to_ACSf @ rot_mat_LAR_local_to_new_ACSm_frame
+
+        return current_transform_local_to_ACSf
 
     def initialize_calculation(self, context):
         """Set up calculation parameters and state"""
@@ -255,19 +250,30 @@ class COLLISION_OT_calculate(Operator):
             self._orig_ACSf_rotation = ACSf_obj.rotation_euler.copy()
             self.report({'INFO'}, f"Fixed ACS starting from rotation: {[math.degrees(r) for r in self._orig_ACSf_rotation]}")
             self.report({'INFO'}, f"Fixed ACS starting from location: {self._orig_ACSf_loc}")
-            
+        
         # Store original transformations for ACSm - this will be moved
         if use_ACSm_bone:
             self._orig_ACSm_bone_matrix = ACSm_bone_matrix.copy()
             self._orig_ACSm_loc = None
             self._orig_ACSm_rotation = None
             self.report({'INFO'}, f"Using bone '{ACSm_bone_name}' as mobile ACS.")
+            # For completeness, store initial local matrix of the pose bone
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+            if pose_bone:
+                self._initial_ACSm_bone_matrix_local = pose_bone.matrix.copy()
         else:
             self._orig_ACSm_loc = ACSm_obj.location.copy()
             self._orig_ACSm_rotation = ACSm_obj.rotation_euler.copy()
             self.report({'INFO'}, f"Mobile ACS starting from rotation: {[math.degrees(r) for r in self._orig_ACSm_rotation]}")
             self.report({'INFO'}, f"Mobile ACS starting from location: {self._orig_ACSm_loc}")
-        
+            # Store initial local matrix of ACSm_obj
+            self._initial_ACSm_matrix_local = ACSm_obj.matrix_local.copy()
+
+        # Store initial relative transform of ACSm to ACSf (object or bone)
+        mat_ACSf_world_initial = ACSf_bone_matrix.copy() if use_ACSf_bone else ACSf_obj.matrix_world.copy()
+        mat_ACSm_world_initial = ACSm_bone_matrix.copy() if use_ACSm_bone else ACSm_obj.matrix_world.copy()
+        self._initial_relative_ACSm_to_ACSf_matrix = mat_ACSf_world_initial.inverted() @ mat_ACSm_world_initial
+
         # Keyframe the starting position at frame 0
         if use_ACSm_bone:
             pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
@@ -417,37 +423,28 @@ class COLLISION_OT_calculate(Operator):
             trans_x = self._trans_x_range[self._cur_tx_idx]
             trans_y = self._trans_y_range[self._cur_ty_idx]
             trans_z = self._trans_z_range[self._cur_tz_idx]
-              # Calculate proper anatomical rotations based on ACS objects
-            rotation_matrix = self.calculate_acs_rotation(context, ACSf_obj, ACSm_obj, rot_x, rot_y, rot_z)
-            
-            # Apply rotations and translations to ACSm (mobile object)
+
+            # Calculate FE + AD/AB rotation increment (JCS, local to ACSf)
+            jcs_rotation_increment_local_to_ACSf = self.calculate_acs_rotation(
+                context, ACSf_obj, ACSm_obj, rot_x, rot_y, rot_z
+            )
+
+            # Apply rotation to ACSm (mobile object)
             if use_ACSm_bone:
                 pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
                 if pose_bone:
-                    # Apply the calculated rotation to the pose bone
-                    orig_matrix = ACSm_obj.matrix_world.copy() @ pose_bone.matrix.copy()
-                    new_matrix = orig_matrix @ rotation_matrix
-                    
-                    # Extract rotation and set it
-                    pose_bone.rotation_mode = props.rot_order
-                    pose_bone.rotation_euler = new_matrix.to_euler(props.rot_order)
-                    
-                    # Apply translations to ACSm
-                    pose_bone.location = mathutils.Vector((trans_x, trans_y, trans_z))
+                    # For completeness, if ACSm is a bone
+                    pose_bone.matrix = self._initial_ACSm_bone_matrix_local @ jcs_rotation_increment_local_to_ACSf
+                    # # Apply translations if needed (commented out for now)
+                    # pose_bone.location = mathutils.Vector((trans_x, trans_y, trans_z))
                     context.view_layer.update()
             else:
-                # Apply the calculated rotation to the ACSm object
-                orig_matrix = ACSm_obj.matrix_world.copy()
-                new_matrix = orig_matrix @ rotation_matrix
-                
-                # Extract rotation and set it
-                ACSm_obj.rotation_mode = props.rot_order
-                ACSm_obj.rotation_euler = new_matrix.to_euler(props.rot_order)
-                
-                # Apply translations to ACSm
-                ACSm_obj.location = self._orig_ACSm_loc + mathutils.Vector((trans_x, trans_y, trans_z))
+                # ACSm is an object: apply rotation in local space
+                ACSm_obj.matrix_local = self._initial_ACSm_matrix_local @ jcs_rotation_increment_local_to_ACSf
+                # # Apply translations if needed (commented out for now)
+                # ACSm_obj.location = self._orig_ACSm_loc + mathutils.Vector((trans_x, trans_y, trans_z))
                 context.view_layer.update()
-            
+
             # Check for collision using the pre-calculated proximal BVH tree
             collision = self.check_collision(prox_obj, dist_obj, self._prox_bvh)
             
@@ -499,8 +496,11 @@ class COLLISION_OT_calculate(Operator):
                 # Time remaining estimate
                 if self._completed_iterations > 0 and self._start_time:
                     elapsed = time.time() - self._start_time
-                    rate = self._completed_iterations / elapsed
-                    remaining = (self._total_iterations - self._completed_iterations) / rate if rate > 0 else 0
+                    if elapsed > 0:
+                        rate = self._completed_iterations / elapsed
+                        remaining = (self._total_iterations - self._completed_iterations) / rate if rate > 0 else 0
+                    else:
+                        remaining = 0
                     mins, secs = divmod(int(remaining), 60)
                     props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
                 else:
