@@ -247,6 +247,40 @@ class CollisionProperties(PropertyGroup):
         default='ACSM_LOCAL_POST_ROT'
     )
     
+    mg_prism_distraction_axis_map: EnumProperty(
+        name="Prism: Distraction/Compression Axis (for trans_x)",
+        description="Which local axis of ACSf (at FE=0) represents Distraction/Compression. Loop's trans_x will be applied along this initial direction (rotated by current FE).",
+        items=[('X', "ACSf Local X", "Distraction/Compression along ACSf's initial local X-axis"),
+               ('Y', "ACSf Local Y", "Distraction/Compression along ACSf's initial local Y-axis"),
+               ('Z', "ACSf Local Z", "Distraction/Compression along ACSf's initial local Z-axis"),
+               ('NEGATIVE_X', "ACSf Local -X", "Distraction/Compression along ACSf's initial local -X-axis"),
+               ('NEGATIVE_Y', "ACSf Local -Y", "Distraction/Compression along ACSf's initial local -Y-axis"),
+               ('NEGATIVE_Z', "ACSf Local -Z", "Distraction/Compression along ACSf's initial local -Z-axis")],
+        default='X'
+    )
+    mg_prism_ap_glide_axis_map: EnumProperty(
+        name="Prism: AP-Glide Axis (for trans_y)",
+        description="Which local axis of ACSf (at FE=0) represents Anterior/Posterior Glide. Loop's trans_y will be applied along this initial direction (rotated by current FE).",
+        items=[('X', "ACSf Local X", "AP-Glide along ACSf's initial local X-axis"),
+               ('Y', "ACSf Local Y", "AP-Glide along ACSf's initial local Y-axis"),
+               ('Z', "ACSf Local Z", "AP-Glide along ACSf's initial local Z-axis"),
+               ('NEGATIVE_X', "ACSf Local -X", "AP-Glide along ACSf's initial local -X-axis"),
+               ('NEGATIVE_Y', "ACSf Local -Y", "AP-Glide along ACSf's initial local -Y-axis"),
+               ('NEGATIVE_Z', "ACSf Local -Z", "AP-Glide along ACSf's initial local -Z-axis")],
+        default='Y'
+    )
+    mg_prism_ml_shift_axis_map: EnumProperty(
+        name="Prism: ML-Shift Axis (for trans_z)",
+        description="Which local axis of ACSf (at FE=0) represents Medio/Lateral Shift. Loop's trans_z will be applied along this initial direction (rotated by current FE).",
+        items=[('X', "ACSf Local X", "ML-Shift along ACSf's initial local X-axis"),
+               ('Y', "ACSf Local Y", "ML-Shift along ACSf's initial local Y-axis"),
+               ('Z', "ACSf Local Z", "ML-Shift along ACSf's initial local Z-axis"),
+               ('NEGATIVE_X', "ACSf Local -X", "ML-Shift along ACSf's initial local -X-axis"),
+               ('NEGATIVE_Y', "ACSf Local -Y", "ML-Shift along ACSf's initial local -Y-axis"),
+               ('NEGATIVE_Z', "ACSf Local -Z", "ML-Shift along ACSf's initial local -Z-axis")],
+        default='Z'
+    )
+    
     use_convex_hull_optimization: BoolProperty(
         name="Use Convex Hull Pre-Check",
         description="Enable to use a faster convex hull pre-check. WARNING: May give incorrect non-collision results if one object can be fully contained within the other. Disable for full accuracy in such cases.",

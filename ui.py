@@ -92,6 +92,16 @@ class COLLISION_PT_panel(Panel):
         box.label(text="Translation:")
         # Translation mode dropdown
         box.prop(props, "translation_mode_enum", text="Translation Mode")
+        # Show M&G Prism axis mapping only if that mode is selected
+        if props.translation_mode_enum == 'MG_PRISM_HINGE':
+            prism_box = box.box()
+            col = prism_box.column(align=True)
+            col.label(text="M&G Prism Initial Axis Definitions (ACSf Local at FE=0):")
+            col.label(text="Map loop's trans_x,y,z to these ACSf axes for prism directions:")
+            col.prop(props, "mg_prism_distraction_axis_map", text="trans_x (Distraction) along")
+            col.prop(props, "mg_prism_ap_glide_axis_map", text="trans_y (AP-Glide) along")
+            col.prop(props, "mg_prism_ml_shift_axis_map", text="trans_z (ML-Shift) along")
+            col.label(text="Note: Ensure selected axes are orthogonal for a standard prism.", icon='INFO')
         # Add column headers for translation
         header_row = box.row(align=True)
         header_row.label(text="")  # Empty space for axis label

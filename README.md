@@ -79,7 +79,7 @@ Define the range and increment for translational offsets. Their meaning depends 
 
 -   **JCS Sequence:** The addon internally applies JCS rotations in the order: 1st Flexion/Extension (`rot_z`), 2nd Adduction/Abduction (`rot_y`), 3rd Long-Axis Rotation (`rot_x`).
 -   **"Visual Twist":** The "ISB Standard" rotation logic can produce a "visual twist" (an apparent roll) when FE and AD/AB are combined, even if input LAR is zero. This is a mathematical property of such sequential rotations (Gimbal effect/coupling). The "Intuitive (Fixed Y)" mode reduces this for AD/AB.
--   **M&G Prism Mode:** For the "M&G Prism (Hinge)" translation mode, the code currently uses example prism axes (ACSf local X, Y, Z). For accurate anatomical meaning (Distraction, AP-Glide, ML-Shift), these initial prism axis definitions within `operators.py` might need to be adjusted based on your specific `ACSf` setup for the hinge joint.
+-   **M&G Prism Mode:** For the "M&G Prism (Hinge)" translation mode, make sure to properly set axes for distraction/compression, AP and ML movement.
 -   **Delta Transforms:** It's recommended to use Delta Transforms (Ctrl+A > Apply to Deltas) for the initial visual setup of `ACSf` and `ACSm` if their main transform values need to be at identity/zero for the script's logic (especially for `ACSm`'s initial local matrix relative to `ACSf`).
 -   **Object Origins:** The origin of `ACSm` (or head of `ACSm_bone`) is crucial as it defines the point around which JCS rotations are conceptually applied and from which local translations (in "ACSm Local" mode) originate.
 -   **Experimental:** This addon implements complex biomechanical concepts. Always save your work and test with simple setups first.
