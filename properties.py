@@ -24,44 +24,42 @@ class CollisionProperties(PropertyGroup):
         type=bpy.types.Object
     )
     
-    # ACS objects (anatomical coordinate system)
-    ACSf_object: PointerProperty(
-        name="ACS Fixed",
-        description="Select the fixed anatomical coordinate system (determines flexion/extension Z axis)",
+    ACSf: PointerProperty(
+        name="Fixed (proximal) axis",
+        description="Select the object to use as the rotation center for the first joint (proximal)",
         type=bpy.types.Object
     )
     
-    ACSm_object: PointerProperty(
-        name="ACS Mobile",
-        description="Select the mobile anatomical coordinate system (determines long axis rotation X axis)",
+    ACSm: PointerProperty(
+        name="Mobile (distal) axis",
+        description="Can select joint 1 again, or leave blank, if not translating, and axes are aligned",
         type=bpy.types.Object
     )
 
-    def update_ACSf_bone(self, context):
-        # Called when ACSf_object changes, to update the bone list
-        if self.ACSf_object and self.ACSf_object.type == 'ARMATURE':
-            armature = self.ACSf_object.data
+    rotational_bone: EnumProperty(
+        name="Fixed (proximal) bone",
+        description="Select the bone to use as the rotation center for the first joint (proximal, if armature)",
+        items=lambda self, context: self.update_rotational_bone(context),
+    )
+
+    rotational_bone_2: EnumProperty(
+        name="Mobile (distal) bone",
+        description="Select the bone to use as the rotation center for the second joint (distal, if armature). Can select joint 1 again, or leave blank, if not translating, and axes are aligned.",
+        items=lambda self, context: self.update_rotational_bone_2(context),
+    )
+
+    def update_rotational_bone_2(self, context):
+        if self.ACSm and self.ACSm.type == 'ARMATURE':
+            armature = self.ACSm.data
             return [(bone.name, bone.name, "") for bone in armature.bones]
         return []
-
-    ACSf_bone: EnumProperty(
-        name="ACS Fixed Bone",
-        description="Select the fixed bone to use for the ACS fixed coordinate system",
-        items=lambda self, context: self.update_ACSf_bone(context),
-    )
     
-    def update_ACSm_bone(self, context):
-        # Called when ACSm_object changes, to update the bone list
-        if self.ACSm_object and self.ACSm_object.type == 'ARMATURE':
-            armature = self.ACSm_object.data
+    def update_rotational_bone(self, context):
+        if self.ACSf and self.ACSf.type == 'ARMATURE':
+            armature = self.ACSf.data
             return [(bone.name, bone.name, "") for bone in armature.bones]
         return []
 
-    ACSm_bone: EnumProperty(
-        name="ACS Mobile Bone",
-        description="Select the mobile bone to use for the ACS mobile coordinate system",
-        items=lambda self, context: self.update_ACSm_bone(context),
-    )
     
     # Rotation parameters
     rot_x_min: FloatProperty(
@@ -258,7 +256,7 @@ class CollisionProperties(PropertyGroup):
     
     time_remaining: StringProperty(
         name="Time Remaining",
-        description="Estimated time remaining for the calculation",
+        description="Estimated time remaining",
         default=""
     )
     
