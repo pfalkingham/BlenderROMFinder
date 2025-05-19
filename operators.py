@@ -168,38 +168,37 @@ class COLLISION_OT_calculate(Operator):
         return None
 
     def calculate_acs_rotation(self, context, ACSf_obj, ACSm_obj, rot_x_degrees, rot_y_degrees, rot_z_degrees):
-        """Return a pure Flexion/Extension (FE) rotation matrix local to ACSf.
-        Only rot_z_degrees (FE) is used; others are ignored.
-        The returned matrix is a rotation about the local Z axis of ACSf.
-        """
+        props = context.scene.collision_props
         import mathutils
         import math
         from mathutils import Matrix, Vector
 
-        # Start with identity (ACSm aligned with ACSf)
         current_transform_local_to_ACSf = Matrix.Identity(4)
 
-        # Flexion/Extension (FE)
+        # 1. Flexion/Extension (FE) - around ACSf's local Z
         axis_Z_FE_in_ACSf_local = Vector((0, 0, 1))
         rot_mat_FE = Matrix.Rotation(math.radians(rot_z_degrees), 4, axis_Z_FE_in_ACSf_local)
         current_transform_local_to_ACSf = current_transform_local_to_ACSf @ rot_mat_FE
 
-        # AD/AB axis: X of ACSm after FE, in ACSf local
-        axis_X_ACSm_in_ACSf_local_after_FE = current_transform_local_to_ACSf.col[0].to_3d().normalized()
-        #print("FE Axis (ACSf local Z):", axis_Z_FE_in_ACSf_local)
-        #print("ACSm X-axis after FE (in ACSf local):", axis_X_ACSm_in_ACSf_local_after_FE)
-
-        # AD/AB axis is cross product (Y = Z x X')
-        axis_Y_ADAB_in_ACSf_local = axis_Z_FE_in_ACSf_local.cross(axis_X_ACSm_in_ACSf_local_after_FE)
-        if axis_Y_ADAB_in_ACSf_local.length < 1e-8:
+        # 2. Adduction/Abduction (AD/AB)
+        if hasattr(props, 'rotation_mode_enum') and props.rotation_mode_enum == 'ISB_STANDARD':
+            # ISB Standard Floating Y-axis
+            axis_X_ACSm_in_ACSf_local_after_FE = current_transform_local_to_ACSf.col[0].to_3d().normalized()
+            axis_Y_ADAB_in_ACSf_local = axis_Z_FE_in_ACSf_local.cross(axis_X_ACSm_in_ACSf_local_after_FE)
+            if axis_Y_ADAB_in_ACSf_local.length < 1e-8:
+                axis_Y_ADAB_in_ACSf_local = Vector((0, 1, 0))
+            else:
+                axis_Y_ADAB_in_ACSf_local.normalize()
+        elif hasattr(props, 'rotation_mode_enum') and props.rotation_mode_enum == 'INTUITIVE':
+            # Intuitive Mode: AD/AB always around ACSf's fixed local Y-axis
             axis_Y_ADAB_in_ACSf_local = Vector((0, 1, 0))
         else:
-            axis_Y_ADAB_in_ACSf_local.normalize()
+            axis_Y_ADAB_in_ACSf_local = Vector((0, 1, 0))
 
         rot_mat_ADAB = Matrix.Rotation(math.radians(rot_y_degrees), 4, axis_Y_ADAB_in_ACSf_local)
         current_transform_local_to_ACSf = current_transform_local_to_ACSf @ rot_mat_ADAB
 
-        # Now apply the X-axis rotation (long axis rotation)
+        # 3. Long-Axis Rotation (LAR) - around ACSm's new local X-axis
         rot_mat_LAR_local_to_new_ACSm_frame = Matrix.Rotation(math.radians(rot_x_degrees), 4, Vector((1, 0, 0)))
         current_transform_local_to_ACSf = current_transform_local_to_ACSf @ rot_mat_LAR_local_to_new_ACSm_frame
 

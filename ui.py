@@ -20,6 +20,9 @@ class COLLISION_PT_panel(Panel):
         version_str = ".".join(str(v) for v in version)
         layout.label(text=f"Range of Motion Finder v{version_str}", icon='PLUGIN')
         
+        # Show rotation logic dropdown at the top
+        layout.prop(props, "rotation_mode_enum", text="Rotation Logic")
+        
         # Check if calculation is in progress
         if props.is_calculating:
             # Show progress information

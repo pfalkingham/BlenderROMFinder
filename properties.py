@@ -150,6 +150,16 @@ class CollisionProperties(PropertyGroup):
         default="ZYX"
     )
     
+    rotation_mode_enum: EnumProperty(
+        name="Rotation Logic",
+        description="Choose rotation logic: ISB standard (floating Y for AD/AB) or Intuitive (fixed Y for AD/AB)",
+        items=[
+            ('ISB_STANDARD', "ISB Standard", "Uses a floating Y-axis for Adduction/Abduction, can result in visual twist."),
+            ('INTUITIVE', "Intuitive (Fixed Y)", "Adduction/Abduction always occurs around ACSf's local Y-axis.")
+        ],
+        default='ISB_STANDARD'
+    )
+    
     # Translation parameters
     trans_x_min: FloatProperty(
         name="X Min",
