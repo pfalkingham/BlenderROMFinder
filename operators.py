@@ -111,41 +111,20 @@ class COLLISION_OT_calculate(Operator):
 
         if props.use_convex_hull_optimization:
             # 1. Proximal Hull (cached Blender object and its BVH)
-            if self._prox_hull_obj is None:
-                self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
-            
-            if self._prox_hull_bvh is None:
-                if self._prox_hull_obj:
-                    self._prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
-                else:
-                    # Fall through to original mesh check if hull creation fails
-                    pass 
-
-            if not self._prox_hull_bvh:
-                # Fall through to original mesh check
-                pass 
-            else:
+            if self._prox_hull_obj is not None and self._prox_hull_bvh is not None:
                 # 2. Distal Hull (temporary Blender object and its BVH for current pose)
                 temp_dist_hull_obj = self.create_convex_hull_object(dist_obj)
-                if not temp_dist_hull_obj:
-                    # Fall through to original mesh check
-                    pass 
-                else:
+                if temp_dist_hull_obj:
                     current_dist_hull_bvh = self.create_bvh_tree(temp_dist_hull_obj)
-                    
                     if temp_dist_hull_obj.name in bpy.data.objects:
                         self.remove_temp_object(temp_dist_hull_obj)
                     temp_dist_hull_obj = None
-
-                    if not current_dist_hull_bvh:
-                        # Fall through to original mesh check
-                        pass 
-                    else:
+                    if current_dist_hull_bvh:
                         # 3. Hull Check
                         hull_overlap_pairs = self._prox_hull_bvh.overlap(current_dist_hull_bvh)
                         if not hull_overlap_pairs:
                             return False # No collision if hulls don't overlap (potential containment missed)
-        
+            # If hull creation failed, fall through to original mesh check
         # 4. Original Mesh Check (if hulls overlapped, hull check was skipped, or optimization is off)
         # BVH for distal object is created directly as poses are unique (or caching is removed)
         dist_bvh_original_mesh = self.create_bvh_tree(dist_obj, transform_matrix)
@@ -333,25 +312,28 @@ class COLLISION_OT_calculate(Operator):
         # Initialize proximal hull and its BVH if optimization is enabled
         if props.use_convex_hull_optimization:
             self.report({'INFO'}, "Pre-calculating convex hull and BVH for proximal object...")
-            if self._prox_hull_obj is None: # Check if already created
-                self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
-            
-            if self._prox_hull_obj and self._prox_hull_bvh is None: # Check if BVH already created
-                 self._prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
-
+            if self._prox_hull_obj is not None:
+                # Remove any previous hull object
+                if self._prox_hull_obj.name in bpy.data.objects:
+                    self.remove_temp_object(self._prox_hull_obj)
+                self._prox_hull_obj = None
+                self._prox_hull_bvh = None
+            self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
+            if self._prox_hull_obj:
+                self._prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
             if not self._prox_hull_obj or not self._prox_hull_bvh:
                 self.report({'WARNING'}, "Failed to create convex hull or its BVH for proximal object. Convex hull optimization will be less effective or disabled for prox.")
                 # Continue without hull if it fails, check_collision will handle it or fall back
+        else:
+            # If not using convex hull optimization, ensure no cached hulls remain
+            if self._prox_hull_obj is not None:
+                if self._prox_hull_obj.name in bpy.data.objects:
+                    self.remove_temp_object(self._prox_hull_obj)
+                self._prox_hull_obj = None
+                self._prox_hull_bvh = None
 
         self._is_initialized = True
         self._start_time = time.time()
-        
-        # Ensure cached hull attributes are reset for a new calculation run
-        if hasattr(self, '_prox_hull_obj') and self._prox_hull_obj:
-            if self._prox_hull_obj.name in bpy.data.objects: # Check if it still exists
-                self.remove_temp_object(self._prox_hull_obj)
-        self._prox_hull_obj = None
-        self._prox_hull_bvh = None # BVH trees are just Python objects, no Blender data to remove directly
         
         # Initialize index trackers for iteration
         self._cur_x_idx = 0
@@ -445,7 +427,7 @@ class COLLISION_OT_calculate(Operator):
 
             if translation_mode == 'SIMPLE_ACSf':
                 translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
-                initial_local_translation = initial_local_orientation_matrix.to_translation() # Get translation from initial local
+                initial_local_translation = initial_local_orientation_matrix.to_3d().to_translation() # Get translation from initial local
                 final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
 
             elif translation_mode == 'ACSM_LOCAL_POST_ROT':
@@ -635,11 +617,10 @@ class COLLISION_OT_calculate(Operator):
                 context.view_layer.update()
         
         # Clean up the cached proximal hull object and its BVH
-        if hasattr(self, '_prox_hull_obj') and self._prox_hull_obj:
-            if self._prox_hull_obj.name in bpy.data.objects: # Check if it still exists
+        if self._prox_hull_obj is not None:
+            if self._prox_hull_obj.name in bpy.data.objects:
                 self.remove_temp_object(self._prox_hull_obj)
             self._prox_hull_obj = None
-        # BVH trees are Python objects; they are garbage collected. No specific Blender data to remove for _prox_hull_bvh itself.
         self._prox_hull_bvh = None 
 
         if not cancelled:
