@@ -147,7 +147,7 @@ class CollisionProperties(PropertyGroup):
             ("ZXY", "ZXY", ""),
             ("ZYX", "ZYX", "")
         ],
-        default="ZYX"
+        default="XYZ"
     )
     
     rotation_mode_enum: EnumProperty(
@@ -244,7 +244,7 @@ class CollisionProperties(PropertyGroup):
             ('ACSM_LOCAL_POST_ROT', "ACSm Local (Post-Rotation)", "Translations along ACSm's axes after all JCS rotations have been applied."),
             ('MG_PRISM_HINGE', "M&G Prism (Hinge)", "Translations along M&G prism axes that rotate with Flexion/Extension (primarily for hinge joints). Assumes FE is rot_z.")
         ],
-        default='ACSM_LOCAL_POST_ROT'
+        default='MG_PRISM_HINGE'
     )
     
     mg_prism_distraction_axis_map: EnumProperty(
