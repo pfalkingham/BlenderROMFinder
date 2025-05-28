@@ -68,16 +68,16 @@ class CollisionProperties(PropertyGroup):
         name="X Min",
         description="Minimum X rotation in degrees",
         default=-30.0,
-        min=-180.0,
-        max=180.0
+        min=-360.0,
+        max=360.0
     )
     
     rot_x_max: FloatProperty(
         name="X Max",
         description="Maximum X rotation in degrees",
         default=30.0,
-        min=-180.0,
-        max=180.0
+        min=-360.0,
+        max=360.0
     )
     
     rot_x_inc: FloatProperty(
@@ -92,16 +92,16 @@ class CollisionProperties(PropertyGroup):
         name="Y Min",
         description="Minimum Y rotation in degrees",
         default=-30.0,
-        min=-180.0,
-        max=180.0
+        min=-360.0,
+        max=360.0
     )
     
     rot_y_max: FloatProperty(
         name="Y Max",
         description="Maximum Y rotation in degrees",
         default=30.0,
-        min=-180.0,
-        max=180.0
+        min=-360.0,
+        max=360.0
     )
     
     rot_y_inc: FloatProperty(
@@ -116,16 +116,16 @@ class CollisionProperties(PropertyGroup):
         name="Z Min",
         description="Minimum Z rotation in degrees",
         default=-30.0,
-        min=-180.0,
-        max=180.0
+        min=-360.0,
+        max=360.0
     )
     
     rot_z_max: FloatProperty(
         name="Z Max",
         description="Maximum Z rotation in degrees",
         default=30.0,
-        min=-180.0,
-        max=180.0
+        min=-360.0,
+        max=360.0
     )
     
     rot_z_inc: FloatProperty(

@@ -427,7 +427,11 @@ class COLLISION_OT_calculate(Operator):
 
             if translation_mode == 'SIMPLE_ACSf':
                 translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
-                initial_local_translation = initial_local_orientation_matrix.to_3d().to_translation() # Get translation from initial local
+                # Get the initial translation from the matrix properly
+                if use_ACSm_bone:
+                    initial_local_translation = self._initial_ACSm_bone_matrix_local.translation.copy()
+                else:
+                    initial_local_translation = self._initial_ACSm_matrix_local.translation.copy()
                 final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
 
             elif translation_mode == 'ACSM_LOCAL_POST_ROT':
@@ -471,15 +475,18 @@ class COLLISION_OT_calculate(Operator):
                     (current_direction_for_trans_z * trans_z)
 
                 if use_ACSm_bone:
-                    initial_local_translation = self._initial_ACSm_bone_matrix_local.to_translation()
+                    initial_local_translation = self._initial_ACSm_bone_matrix_local.translation.copy()
                 else:
-                    initial_local_translation = self._initial_ACSm_matrix_local.to_translation()
+                    initial_local_translation = self._initial_ACSm_matrix_local.translation.copy()
                 final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
 
             else: 
                 self.report({'WARNING'}, f"Unknown translation mode: {translation_mode}. Defaulting to SIMPLE_ACSf.")
                 translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
-                initial_local_translation = initial_local_orientation_matrix.to_translation()
+                if use_ACSm_bone:
+                    initial_local_translation = self._initial_ACSm_bone_matrix_local.translation.copy()
+                else:
+                    initial_local_translation = self._initial_ACSm_matrix_local.translation.copy()
                 final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
             # --- END OF INTEGRATED TRANSLATION LOGIC ---
 
