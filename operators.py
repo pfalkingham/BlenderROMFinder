@@ -433,6 +433,21 @@ class COLLISION_OT_calculate(Operator):
 
             translation_mode = getattr(props, 'translation_mode_enum', 'SIMPLE_ACSf') # Default if prop not added yet
 
+            # --- DEBUG CUBE SETUP (create once if needed) ---
+            debug_cube = None
+            if props.debug_mode and translation_mode == 'MG_PRISM_HINGE':
+                cube_name = "MG_PRISM_DEBUG_CUBE"
+                if cube_name in bpy.data.objects:
+                    debug_cube = bpy.data.objects[cube_name]
+                else:
+                    bpy.ops.mesh.primitive_cube_add(size=1)
+                    debug_cube = bpy.context.active_object
+                    debug_cube.name = cube_name
+                    debug_cube.display_type = 'WIRE'
+                    debug_cube.hide_render = True
+                    debug_cube.show_in_front = True
+                    debug_cube.scale = (1, 1, 1)
+
             if translation_mode == 'SIMPLE_ACSf':
                 translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
                 # Get the initial translation from the matrix properly
@@ -448,39 +463,47 @@ class COLLISION_OT_calculate(Operator):
                 final_ACSm_pose_matrix_local = final_ACSm_pose_matrix_local @ local_translation_offset_matrix
             
             elif translation_mode == 'MG_PRISM_HINGE':
-                # This mode applies translations along axes of a virtual prism that rotates
-                # with the primary Flexion/Extension (FE) of the hinge joint.
-                # Assumes FE (rot_z from loop) occurs around ACSf's local Z-axis.
-
-                def get_local_axis_vector_from_prop_str(axis_prop_val_str):
-                    if axis_prop_val_str == 'X': return mathutils.Vector((1,0,0))
-                    if axis_prop_val_str == 'Y': return mathutils.Vector((0,1,0))
-                    if axis_prop_val_str == 'Z': return mathutils.Vector((0,0,1))
-                    if axis_prop_val_str == 'NEGATIVE_X': return mathutils.Vector((-1,0,0))
-                    if axis_prop_val_str == 'NEGATIVE_Y': return mathutils.Vector((0,-1,0))
-                    if axis_prop_val_str == 'NEGATIVE_Z': return mathutils.Vector((0,0,-1))
-                    print(f"WARNING: Unknown prism axis string for M&G Prism: {axis_prop_val_str}. Defaulting to X.")
-                    return mathutils.Vector((1,0,0))
-
-                # Get user-defined initial prism axes (local to ACSf at FE=0)
-                initial_prism_axis_for_trans_x = get_local_axis_vector_from_prop_str(props.mg_prism_distraction_axis_map)
-                initial_prism_axis_for_trans_y = get_local_axis_vector_from_prop_str(props.mg_prism_ap_glide_axis_map)
-                initial_prism_axis_for_trans_z = get_local_axis_vector_from_prop_str(props.mg_prism_ml_shift_axis_map)
-
+                # M&G Prism method: translations along axes that rotate with flexion/extension
+                # but maintain anatomical meaning relative to the joint
+                
                 # Get the current Flexion/Extension angle (rot_z from the loop)
                 fe_angle_rad = math.radians(rot_z)
                 fe_rotation_matrix_local_to_ACSf = mathutils.Matrix.Rotation(fe_angle_rad, 4, mathutils.Vector((0,0,1)))
-
-                # Rotate these initial prism axes by the current FE rotation.
-                current_direction_for_trans_x = (fe_rotation_matrix_local_to_ACSf @ initial_prism_axis_for_trans_x.to_4d()).to_3d()
-                current_direction_for_trans_y = (fe_rotation_matrix_local_to_ACSf @ initial_prism_axis_for_trans_y.to_4d()).to_3d()
-                current_direction_for_trans_z = (fe_rotation_matrix_local_to_ACSf @ initial_prism_axis_for_trans_z.to_4d()).to_3d()
-
+                
+                # Define anatomical prism axes in ACSm's initial orientation
+                # X = Distraction/Compression (along distal bone long axis)
+                # Y = A-P glide (perpendicular to long axis, in sagittal plane)
+                # Z = M-L shift (perpendicular to both, in frontal plane)
+                
+                if use_ACSm_bone:
+                    # Use the initial ACSm bone orientation to define the long axis
+                    initial_long_axis = self._initial_ACSm_bone_matrix_local.col[0].to_3d().normalized()  # Assuming X is long axis
+                    initial_ap_axis = self._initial_ACSm_bone_matrix_local.col[1].to_3d().normalized()     # Y axis
+                    initial_ml_axis = self._initial_ACSm_bone_matrix_local.col[2].to_3d().normalized()     # Z axis
+                else:
+                    # Use the initial ACSm object orientation
+                    initial_long_axis = self._initial_ACSm_matrix_local.col[0].to_3d().normalized()
+                    initial_ap_axis = self._initial_ACSm_matrix_local.col[1].to_3d().normalized()
+                    initial_ml_axis = self._initial_ACSm_matrix_local.col[2].to_3d().normalized()
+                
+                # Transform these axes to ACSf space at FE=0
+                initial_long_axis_in_ACSf = (self._initial_relative_ACSm_to_ACSf_matrix @ initial_long_axis.to_4d()).to_3d()
+                initial_ap_axis_in_ACSf = (self._initial_relative_ACSm_to_ACSf_matrix @ initial_ap_axis.to_4d()).to_3d()
+                initial_ml_axis_in_ACSf = (self._initial_relative_ACSm_to_ACSf_matrix @ initial_ml_axis.to_4d()).to_3d()
+                
+                # Rotate these axes by the current FE rotation to get the prism orientation
+                current_long_axis = (fe_rotation_matrix_local_to_ACSf @ initial_long_axis_in_ACSf.to_4d()).to_3d()
+                current_ap_axis = (fe_rotation_matrix_local_to_ACSf @ initial_ap_axis_in_ACSf.to_4d()).to_3d()
+                current_ml_axis = (fe_rotation_matrix_local_to_ACSf @ initial_ml_axis_in_ACSf.to_4d()).to_3d()
+                
                 # Calculate the total translational offset in ACSf's local space
+                # trans_x = distraction/compression (along long axis)
+                # trans_y = A-P glide 
+                # trans_z = M-L shift
                 translation_offset_in_ACSf_local_space = \
-                    (current_direction_for_trans_x * trans_x) + \
-                    (current_direction_for_trans_y * trans_y) + \
-                    (current_direction_for_trans_z * trans_z)
+                    (current_long_axis * trans_x) + \
+                    (current_ap_axis * trans_y) + \
+                    (current_ml_axis * trans_z)
 
                 if use_ACSm_bone:
                     initial_local_translation = self._initial_ACSm_bone_matrix_local.translation.copy()
@@ -488,6 +511,21 @@ class COLLISION_OT_calculate(Operator):
                     initial_local_translation = self._initial_ACSm_matrix_local.translation.copy()
                 final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
 
+                # --- DEBUG CUBE TRANSFORM & KEYFRAME ---
+                if props.debug_mode and debug_cube:
+                    # Place cube at ACSm's world position, align to prism axes
+                    if use_ACSm_bone:
+                        pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+                        if pose_bone:
+                            bone_world_matrix = ACSm_obj.matrix_world @ pose_bone.matrix
+                            debug_cube.matrix_world = bone_world_matrix
+                    else:
+                        debug_cube.matrix_world = ACSm_obj.matrix_world
+                    # Optionally scale the cube to visualize the axes better
+                    debug_cube.scale = (1, 1, 1)  # Adjust as needed
+                    debug_cube.keyframe_insert(data_path="location", frame=self._debug_frame)
+                    debug_cube.keyframe_insert(data_path="rotation_euler", frame=self._debug_frame)
+                    debug_cube.keyframe_insert(data_path="scale", frame=self._debug_frame)
             else: 
                 self.report({'WARNING'}, f"Unknown translation mode: {translation_mode}. Defaulting to SIMPLE_ACSf.")
                 translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
