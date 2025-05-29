@@ -145,6 +145,12 @@ class COLLISION_PT_panel(Panel):
             info_row = box.row()
             info_row.label(text="Check NLA Editor to see animations", icon='INFO')
         
+        # Debug mode option
+        box.prop(props, "debug_mode")
+        if props.debug_mode:
+            debug_row = box.row()
+            debug_row.label(text="Debug: Shows ALL poses (colliding + valid)", icon='INFO')
+        
         # Performance options - keep this as a SEPARATE box
         box = layout.box()
         box.label(text="Performance Options:", icon='PREFERENCES')

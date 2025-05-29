@@ -68,6 +68,10 @@ class COLLISION_OT_calculate(Operator):
     # Additional optimization variables
     _start_time = None
     
+    # Debug mode frame counters
+    _debug_collision_frame = None
+    _debug_non_collision_frame = None
+    
     def create_bvh_tree(self, obj, transform_matrix=None):
         """Create a BVH tree from an object's mesh data, with optional transformation."""
         bm = bmesh.new()
@@ -350,6 +354,10 @@ class COLLISION_OT_calculate(Operator):
         # Add a counter for non-collision keyframes
         self._non_collision_frame = 1
         
+        # Initialize debug mode frame counters
+        if props.debug_mode:
+            self._debug_frame = 1  # Start debug mode frame counter at 1
+        
         # Update UI to show progress
         props.calculation_progress = 0.0
         props.is_calculating = True
@@ -505,9 +513,25 @@ class COLLISION_OT_calculate(Operator):
             
             # Record data for CSV export
             self._csv_data.append([rot_x, rot_y, rot_z, trans_x, trans_y, trans_z, 0 if collision else 1])
-            
             # Keyframing logic
-            if not collision:
+            if props.debug_mode:
+                # In debug mode, keyframe every pose at a continuous frame and store collision status
+                debug_frame = self._debug_frame
+                if use_ACSm_bone:
+                    pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+                    if pose_bone:
+                        pose_bone.keyframe_insert(data_path="location", frame=debug_frame)
+                        pose_bone.keyframe_insert(data_path="rotation_euler", frame=debug_frame)
+                        # Store collision status as a custom property on the pose bone
+                        pose_bone["collision"] = bool(collision)
+                else:
+                    ACSm_obj.keyframe_insert(data_path="location", frame=debug_frame)
+                    ACSm_obj.keyframe_insert(data_path="rotation_euler", frame=debug_frame)
+                    # Store collision status as a custom property on the object
+                    ACSm_obj["collision"] = bool(collision)
+                self._debug_frame += 1
+            elif not collision:
+                # Normal mode: only keyframe non-collision poses
                 if props.visualize_collisions:
                     if use_ACSm_bone:
                         pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
@@ -645,9 +669,12 @@ class COLLISION_OT_calculate(Operator):
                     writer.writerows(self._csv_data)
                 
                 self.report({'INFO'}, f"Collision data exported to {filepath}")
-            
-            # Removed separate keyframe operator call.
-            self.report({'INFO'}, f"Inserted {self._non_collision_frame-1} keyframes on collision-free poses")
+              # Report keyframe results
+            if props.debug_mode:
+                debug_keyframes = self._debug_frame - 1 if hasattr(self, '_debug_frame') else 0
+                self.report({'INFO'}, f"Debug mode: Inserted {debug_keyframes} keyframes (all poses, colliding and non-colliding, frames 1-{debug_keyframes})")
+            else:
+                self.report({'INFO'}, f"Inserted {self._non_collision_frame-1} keyframes on collision-free poses")
         
         # Output total time taken
         if self._start_time:
