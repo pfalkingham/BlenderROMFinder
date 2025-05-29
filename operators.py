@@ -433,20 +433,26 @@ class COLLISION_OT_calculate(Operator):
 
             translation_mode = getattr(props, 'translation_mode_enum', 'SIMPLE_ACSf') # Default if prop not added yet
 
-            # --- DEBUG CUBE SETUP (create once if needed) ---
-            debug_cube = None
+            # --- DEBUG PRISM ARROWS SETUP (create once if needed) ---
+            debug_arrows = {}
             if props.debug_mode and translation_mode == 'MG_PRISM_HINGE':
-                cube_name = "MG_PRISM_DEBUG_CUBE"
-                if cube_name in bpy.data.objects:
-                    debug_cube = bpy.data.objects[cube_name]
-                else:
-                    bpy.ops.mesh.primitive_cube_add(size=1)
-                    debug_cube = bpy.context.active_object
-                    debug_cube.name = cube_name
-                    debug_cube.display_type = 'WIRE'
-                    debug_cube.hide_render = True
-                    debug_cube.show_in_front = True
-                    debug_cube.scale = (1, 1, 1)
+                arrow_defs = [
+                    ("MG_PRISM_DEBUG_ARROW_X", (1, 0, 0), (1, 0, 0)),  # Red, X axis
+                    ("MG_PRISM_DEBUG_ARROW_Y", (0, 1, 0), (0, 1, 0)),  # Green, Y axis
+                    ("MG_PRISM_DEBUG_ARROW_Z", (0, 0, 1), (0, 0, 1)),  # Blue, Z axis
+                ]
+                for name, color, axis in arrow_defs:
+                    if name in bpy.data.objects:
+                        debug_arrows[name] = bpy.data.objects[name]
+                    else:
+                        bpy.ops.object.empty_add(type='ARROWS')
+                        arrow = bpy.context.active_object
+                        arrow.name = name
+                        arrow.empty_display_size = 0.3
+                        # Set color using custom viewport display (Blender 3.0+)
+                        if hasattr(arrow, 'color'):
+                            arrow.color = (*color, 1.0)
+                        debug_arrows[name] = arrow
 
             if translation_mode == 'SIMPLE_ACSf':
                 translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
@@ -511,21 +517,40 @@ class COLLISION_OT_calculate(Operator):
                     initial_local_translation = self._initial_ACSm_matrix_local.translation.copy()
                 final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
 
-                # --- DEBUG CUBE TRANSFORM & KEYFRAME ---
-                if props.debug_mode and debug_cube:
-                    # Place cube at ACSm's world position, align to prism axes
+                # --- DEBUG PRISM ARROWS TRANSFORM & KEYFRAME ---
+                if props.debug_mode and debug_arrows:
+                    # Place arrows at ACSm's world position, align to prism axes, scale to translation
                     if use_ACSm_bone:
                         pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
                         if pose_bone:
-                            bone_world_matrix = ACSm_obj.matrix_world @ pose_bone.matrix
-                            debug_cube.matrix_world = bone_world_matrix
+                            base_matrix = ACSm_obj.matrix_world @ pose_bone.matrix
                     else:
-                        debug_cube.matrix_world = ACSm_obj.matrix_world
-                    # Optionally scale the cube to visualize the axes better
-                    debug_cube.scale = (1, 1, 1)  # Adjust as needed
-                    debug_cube.keyframe_insert(data_path="location", frame=self._debug_frame)
-                    debug_cube.keyframe_insert(data_path="rotation_euler", frame=self._debug_frame)
-                    debug_cube.keyframe_insert(data_path="scale", frame=self._debug_frame)
+                        base_matrix = ACSm_obj.matrix_world
+                    # X axis (long axis)
+                    arrow_x = debug_arrows["MG_PRISM_DEBUG_ARROW_X"]
+                    arrow_x.matrix_world = base_matrix.copy()
+                    arrow_x.scale = (max(abs(trans_x), 0.1), 0.5, 0.5)  # Increased by 10x
+                    arrow_x.keyframe_insert(data_path="location", frame=self._debug_frame)
+                    arrow_x.keyframe_insert(data_path="rotation_euler", frame=self._debug_frame)
+                    arrow_x.keyframe_insert(data_path="scale", frame=self._debug_frame)
+                    # Y axis (A-P)
+                    arrow_y = debug_arrows["MG_PRISM_DEBUG_ARROW_Y"]
+                    mat_y = base_matrix.copy()
+                    mat_y @= mathutils.Matrix.Rotation(math.radians(90), 4, 'Z')
+                    arrow_y.matrix_world = mat_y
+                    arrow_y.scale = (max(abs(trans_y), 0.1), 0.5, 0.5)  # Increased by 10x
+                    arrow_y.keyframe_insert(data_path="location", frame=self._debug_frame)
+                    arrow_y.keyframe_insert(data_path="rotation_euler", frame=self._debug_frame)
+                    arrow_y.keyframe_insert(data_path="scale", frame=self._debug_frame)
+                    # Z axis (M-L)
+                    arrow_z = debug_arrows["MG_PRISM_DEBUG_ARROW_Z"]
+                    mat_z = base_matrix.copy()
+                    mat_z @= mathutils.Matrix.Rotation(math.radians(90), 4, 'Y')
+                    arrow_z.matrix_world = mat_z
+                    arrow_z.scale = (max(abs(trans_z), 0.1), 0.5, 0.5)  # Increased by 10x
+                    arrow_z.keyframe_insert(data_path="location", frame=self._debug_frame)
+                    arrow_z.keyframe_insert(data_path="rotation_euler", frame=self._debug_frame)
+                    arrow_z.keyframe_insert(data_path="scale", frame=self._debug_frame)
             else: 
                 self.report({'WARNING'}, f"Unknown translation mode: {translation_mode}. Defaulting to SIMPLE_ACSf.")
                 translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
