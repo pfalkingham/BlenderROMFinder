@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Range of Motion Finder",
     "author": "Peter Falkingham, Andréas Jannel, Ben Griffin (Liverpool John Moores University), and gratuitious AI/LLMs, especiially Google AI Studio",
-    "version": (2, 5, 6),
+    "version": (2, 5, 7),
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > ROM",
     "description": "Find poses where two objects do not collide based on rotations and translations",
@@ -15,7 +15,7 @@ from bpy.props import PointerProperty
 
 # Import components from modules
 from .properties import CollisionProperties
-from .operators import COLLISION_OT_calculate, COLLISION_OT_cancel
+from .ccoreComputation import COLLISION_OT_calculate, COLLISION_OT_cancel
 from .ui import COLLISION_PT_panel
 
 # Registration
