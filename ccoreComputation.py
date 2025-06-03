@@ -36,7 +36,7 @@ class COLLISION_OT_calculate(Operator):
     
     #def initialize any properties used once you click go.
 
-    def define_axes(self, props, ACSm_obj, ACSf_obj):
+    def define_y_axis(self, props, ACSm_obj, ACSf_obj):
         import mathutils
         # X axis from ACSm, Z axis from ACSf, Y depends on rotation_mode_enum
         x_axis = ACSm_obj.matrix_world.col[0].to_3d().normalized()
@@ -47,19 +47,7 @@ class COLLISION_OT_calculate(Operator):
             # ISB uses floating y = cross(x,z)
             y_axis = x_axis.cross(z_axis).normalized()
         self.report({'INFO'}, f"Axes set. X={x_axis}, Y={y_axis}, Z={z_axis}")
-
-    def define_translations(self, props, ACSf_obj, ACSm_obj):
-        if props.translation_mode_enum == 'SIMPLE_ACSf':
-            self.report({'INFO'}, "Using ACSf local axes for translations.")
-        elif props.translation_mode_enum == 'ACSM_LOCAL_POST_ROT':
-            self.report({'INFO'}, "Using ACSm local axes post-rotation.")
-        else:
-            self.report({'INFO'}, "MG_PRISM_HINGE mode not yet fully implemented.")
-
-    def create_convex_hulls(self, prox_obj, dist_obj):
-        import bpy
-        # Example approach: just print placeholders
-        self.report({'INFO'}, f"Created convex hulls for {prox_obj.name} and {dist_obj.name}")
+        return y_axis
 
     def calculate_bvh_trees(self, obj1, obj2):
         import mathutils
@@ -332,10 +320,11 @@ class COLLISION_OT_calculate(Operator):
                 z_axis = ACSf_obj.matrix_world.col[2].to_3d().normalized()
                 pivot = ACSf_obj.matrix_world.translation.copy()
 
-                # First apply local rx and ry rotations to the original world matrix
+                # apply local rx and ry rotations to the original world matrix
                 base_rotation_matrix = self._saved_world_matrix.to_3x3()
                 rx_mat = mathutils.Matrix.Rotation(math.radians(rx), 3, 'X')
-                ry_mat = mathutils.Matrix.Rotation(math.radians(ry), 3, 'Y')
+                yaxis = self.define_y_axis(props, self._prox_obj, ACSf_obj) # Get the defined y-axis
+                ry_mat = mathutils.Matrix.Rotation(math.radians(ry), 3, yaxis)
                 local_rot = ry_mat @ rx_mat
                 
                 # Apply local rotations to the base rotation
@@ -352,6 +341,8 @@ class COLLISION_OT_calculate(Operator):
                 # Rotate the orientation matrix by rz
                 rz_rot_matrix_3x3 = rz_rot_matrix.to_3x3()
                 final_rotation_matrix = rz_rot_matrix_3x3 @ rotated_matrix
+                
+                
                 
                 # Create the final 4x4 world matrix
                 final_world_matrix = final_rotation_matrix.to_4x4()
