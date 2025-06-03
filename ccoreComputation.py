@@ -244,9 +244,8 @@ class COLLISION_OT_calculate(Operator):
             return False
 
         try:
-            iterations_per_batch = props.iterations_per_batch_prop 
+            iterations_per_batch = props.batch_size 
         except AttributeError:
-            self.report({'WARNING'}, "Property 'iterations_per_batch_prop' not found on collision_props. Defaulting to 10. Please define this IntProperty in properties.py.")
             iterations_per_batch = 10 # A sensible default
 
         if iterations_per_batch <= 0: 
@@ -272,8 +271,34 @@ class COLLISION_OT_calculate(Operator):
 
             # --- Perform one iteration's work ---
             try:
-                self._transform_target.location = (self._saved_loc.x + tx, self._saved_loc.y + ty, self._saved_loc.z + tz)
-                self._transform_target.rotation_euler = (math.radians(rx), math.radians(ry), math.radians(rz))
+                # Apply translation first
+                translated_loc = mathutils.Vector((self._saved_loc.x + tx, self._saved_loc.y + ty, self._saved_loc.z + tz))
+
+                # Get ACSf z-axis and location (pivot)
+                ACSf_obj = props.ACSf_object
+                z_axis = ACSf_obj.matrix_world.col[2].to_3d().normalized()
+                pivot = ACSf_obj.location.copy()
+
+                # Compute rotation about ACSf z-axis at ACSf location
+                angle = math.radians(rz)
+                rot_matrix = mathutils.Matrix.Rotation(angle, 4, z_axis)
+
+                # Move to pivot, rotate, move back
+                rel_loc = translated_loc - pivot
+                rotated_loc = rot_matrix @ rel_loc + pivot
+                self._transform_target.location = rotated_loc
+
+                # For rotation_euler, apply rx and ry as before, but rz is now handled by the matrix
+                # Compose the full rotation: first rx, ry about local axes, then rz about ACSf z-axis
+                # We'll use Euler for rx, ry, and matrix for rz
+                rx_mat = mathutils.Matrix.Rotation(math.radians(rx), 4, 'X')
+                ry_mat = mathutils.Matrix.Rotation(math.radians(ry), 4, 'Y')
+                # Combine: first rx, then ry, then rz about ACSf z
+                local_rot = ry_mat @ rx_mat
+                final_rot = rot_matrix @ local_rot
+                self._transform_target.matrix_world = final_rot.to_4x4()
+                self._transform_target.location = rotated_loc
+
                 bpy.context.view_layer.update()
 
                 bvh_prox, bvh_dist = self.calculate_bvh_trees(self._prox_obj, self._dist_obj)
