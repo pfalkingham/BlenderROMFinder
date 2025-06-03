@@ -125,15 +125,25 @@ class COLLISION_OT_calculate(Operator):
         self._saved_world_loc = acsm_obj.matrix_world.translation.copy()
         self._saved_loc = acsm_obj.location.copy()  # Keep for restoration
         self._saved_rot = acsm_obj.rotation_euler.copy()  # Keep for restoration
-        self._transform_target = acsm_obj
-
-        # Debug info about parent relationships
+        self._transform_target = acsm_obj        # Debug info about parent relationships
         if acsm_obj.parent:
             self.report({'INFO'}, f"ACSm is parented to {acsm_obj.parent.name}")
             self.report({'INFO'}, f"ACSm local rotation: {self._saved_rot}")
             self.report({'INFO'}, f"ACSm world location: {self._saved_world_loc}")
         else:
             self.report({'INFO'}, "ACSm has no parent")
+            
+        # Debug info about translation mode
+        self.report({'INFO'}, f"Translation mode: {props.translation_mode_enum}")
+        if props.translation_mode_enum == 'SIMPLE_ACSf':
+            ACSf_obj = props.ACSf_object
+            if ACSf_obj:
+                acsf_x = ACSf_obj.matrix_world.col[0].to_3d().normalized()
+                acsf_y = ACSf_obj.matrix_world.col[1].to_3d().normalized()
+                acsf_z = ACSf_obj.matrix_world.col[2].to_3d().normalized()
+                self.report({'INFO'}, f"ACSf local X-axis: {acsf_x}")
+                self.report({'INFO'}, f"ACSf local Y-axis: {acsf_y}")
+                self.report({'INFO'}, f"ACSf local Z-axis: {acsf_z}")
 
         # Keyframe ACSm at frame 0
         if self._transform_target:
@@ -274,20 +284,51 @@ class COLLISION_OT_calculate(Operator):
             rx = self._rx_values[self._idx_rx]
             ry = self._ry_values[self._idx_ry]
             rz = self._rz_values[self._idx_rz]            # --- Perform one iteration's work ---
-            try:
-                # Work entirely in world coordinates to avoid parent/local space confusion
+            try:                # Work entirely in world coordinates to avoid parent/local space confusion
                 # Start with the saved world location
                 base_world_loc = self._saved_world_loc.copy()
-                
-                # Apply translation in world coordinates
-                translated_world_loc = mathutils.Vector((
-                    base_world_loc.x + tx, 
-                    base_world_loc.y + ty, 
-                    base_world_loc.z + tz
-                ))
+                  # Apply translation based on translation mode
+                ACSf_obj = props.ACSf_object
+                if props.translation_mode_enum == 'SIMPLE_ACSf':
+                    # Translate along ACSf's local axes
+                    acsf_x_axis = ACSf_obj.matrix_world.col[0].to_3d().normalized()
+                    acsf_y_axis = ACSf_obj.matrix_world.col[1].to_3d().normalized() 
+                    acsf_z_axis = ACSf_obj.matrix_world.col[2].to_3d().normalized()
+                    
+                    # Convert to float to avoid numpy/Vector type mixing issues
+                    translation_vector = (float(tx) * acsf_x_axis + 
+                                        float(ty) * acsf_y_axis + 
+                                        float(tz) * acsf_z_axis)
+                    translated_world_loc = base_world_loc + translation_vector
+                    
+                elif props.translation_mode_enum == 'ACSM_LOCAL_POST_ROT':
+                    # Translate along ACSm's local axes after applying rx, ry rotations
+                    # First get the rotated ACSm matrix (before rz rotation around ACSf)
+                    base_rotation_matrix = self._saved_world_matrix.to_3x3()
+                    rx_mat = mathutils.Matrix.Rotation(math.radians(rx), 3, 'X')
+                    ry_mat = mathutils.Matrix.Rotation(math.radians(ry), 3, 'Y')
+                    local_rot = ry_mat @ rx_mat
+                    rotated_acsm_matrix = base_rotation_matrix @ local_rot
+                    
+                    # Get the rotated ACSm axes
+                    acsm_x_axis = rotated_acsm_matrix.col[0].normalized()
+                    acsm_y_axis = rotated_acsm_matrix.col[1].normalized()
+                    acsm_z_axis = rotated_acsm_matrix.col[2].normalized()
+                    
+                    # Convert to float to avoid numpy/Vector type mixing issues
+                    translation_vector = (float(tx) * acsm_x_axis + 
+                                        float(ty) * acsm_y_axis + 
+                                        float(tz) * acsm_z_axis)
+                    translated_world_loc = base_world_loc + translation_vector
+                else:
+                    # Default to world coordinates (or MG_PRISM_HINGE mode)
+                    translated_world_loc = mathutils.Vector((
+                        base_world_loc.x + tx, 
+                        base_world_loc.y + ty, 
+                        base_world_loc.z + tz
+                    ))
 
                 # Get ACSf z-axis and location (pivot) in world coordinates
-                ACSf_obj = props.ACSf_object
                 z_axis = ACSf_obj.matrix_world.col[2].to_3d().normalized()
                 pivot = ACSf_obj.matrix_world.translation.copy()
 
