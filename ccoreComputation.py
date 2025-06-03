@@ -115,17 +115,25 @@ class COLLISION_OT_calculate(Operator):
         self._idx_tz = 0
         self._idx_rx = 0
         self._idx_ry = 0
-        self._idx_rz = 0
-
-        # Store original transforms and target
+        self._idx_rz = 0        # Store original transforms and target
         acsm_obj = props.ACSm_object
         if not acsm_obj:
             self.report({'ERROR'}, "ACSm object not set.")
             return False
-            
-        self._saved_loc = acsm_obj.location.copy()
-        self._saved_rot = acsm_obj.rotation_euler.copy()
+          # Save world coordinates - this is crucial for parented objects
+        self._saved_world_matrix = acsm_obj.matrix_world.copy()
+        self._saved_world_loc = acsm_obj.matrix_world.translation.copy()
+        self._saved_loc = acsm_obj.location.copy()  # Keep for restoration
+        self._saved_rot = acsm_obj.rotation_euler.copy()  # Keep for restoration
         self._transform_target = acsm_obj
+
+        # Debug info about parent relationships
+        if acsm_obj.parent:
+            self.report({'INFO'}, f"ACSm is parented to {acsm_obj.parent.name}")
+            self.report({'INFO'}, f"ACSm local rotation: {self._saved_rot}")
+            self.report({'INFO'}, f"ACSm world location: {self._saved_world_loc}")
+        else:
+            self.report({'INFO'}, "ACSm has no parent")
 
         # Keyframe ACSm at frame 0
         if self._transform_target:
@@ -174,16 +182,14 @@ class COLLISION_OT_calculate(Operator):
              self._total_iterations > 0 and self._completed_iterations < self._total_iterations:
             report_msg = f"Calculation ended prematurely after {self._completed_iterations}/{self._total_iterations} iterations."
 
-        self.report({'INFO'}, report_msg)
-
-        # Clean up instance variables
+        self.report({'INFO'}, report_msg)        # Clean up instance variables
         attrs_to_clear = [
             '_prox_obj', '_dist_obj', '_csv_results',
             '_rx_values', '_ry_values', '_rz_values',
             '_tx_values', '_ty_values', '_tz_values',
             '_total_iterations', '_completed_iterations',
             '_idx_tx', '_idx_ty', '_idx_tz', '_idx_rx', '_idx_ry', '_idx_rz',
-            '_saved_loc', '_saved_rot', '_transform_target',
+            '_saved_loc', '_saved_rot', '_saved_world_matrix', '_saved_world_loc', '_transform_target',
             '_is_initialized_for_modal', '_timer' # Clear timer attribute as well
         ]
         for attr in attrs_to_clear:
@@ -267,37 +273,51 @@ class COLLISION_OT_calculate(Operator):
             tz = self._tz_values[self._idx_tz]
             rx = self._rx_values[self._idx_rx]
             ry = self._ry_values[self._idx_ry]
-            rz = self._rz_values[self._idx_rz]
-
-            # --- Perform one iteration's work ---
+            rz = self._rz_values[self._idx_rz]            # --- Perform one iteration's work ---
             try:
-                # Apply translation first
-                translated_loc = mathutils.Vector((self._saved_loc.x + tx, self._saved_loc.y + ty, self._saved_loc.z + tz))
+                # Work entirely in world coordinates to avoid parent/local space confusion
+                # Start with the saved world location
+                base_world_loc = self._saved_world_loc.copy()
+                
+                # Apply translation in world coordinates
+                translated_world_loc = mathutils.Vector((
+                    base_world_loc.x + tx, 
+                    base_world_loc.y + ty, 
+                    base_world_loc.z + tz
+                ))
 
-                # Get ACSf z-axis and location (pivot)
+                # Get ACSf z-axis and location (pivot) in world coordinates
                 ACSf_obj = props.ACSf_object
                 z_axis = ACSf_obj.matrix_world.col[2].to_3d().normalized()
-                pivot = ACSf_obj.location.copy()
+                pivot = ACSf_obj.matrix_world.translation.copy()
 
-                # Compute rotation about ACSf z-axis at ACSf location
-                angle = math.radians(rz)
-                rot_matrix = mathutils.Matrix.Rotation(angle, 4, z_axis)
-
-                # Move to pivot, rotate, move back
-                rel_loc = translated_loc - pivot
-                rotated_loc = rot_matrix @ rel_loc + pivot
-                self._transform_target.location = rotated_loc
-
-                # For rotation_euler, apply rx and ry as before, but rz is now handled by the matrix
-                # Compose the full rotation: first rx, ry about local axes, then rz about ACSf z-axis
-                # We'll use Euler for rx, ry, and matrix for rz
-                rx_mat = mathutils.Matrix.Rotation(math.radians(rx), 4, 'X')
-                ry_mat = mathutils.Matrix.Rotation(math.radians(ry), 4, 'Y')
-                # Combine: first rx, then ry, then rz about ACSf z
+                # First apply local rx and ry rotations to the original world matrix
+                base_rotation_matrix = self._saved_world_matrix.to_3x3()
+                rx_mat = mathutils.Matrix.Rotation(math.radians(rx), 3, 'X')
+                ry_mat = mathutils.Matrix.Rotation(math.radians(ry), 3, 'Y')
                 local_rot = ry_mat @ rx_mat
-                final_rot = rot_matrix @ local_rot
-                self._transform_target.matrix_world = final_rot.to_4x4()
-                self._transform_target.location = rotated_loc
+                
+                # Apply local rotations to the base rotation
+                rotated_matrix = base_rotation_matrix @ local_rot
+
+                # Now apply rz rotation about ACSf z-axis at ACSf location
+                rz_angle = math.radians(rz)
+                rz_rot_matrix = mathutils.Matrix.Rotation(rz_angle, 4, z_axis)
+
+                # Rotate the location around ACSf pivot
+                rel_loc = translated_world_loc - pivot
+                final_world_loc = rz_rot_matrix @ rel_loc + pivot
+                
+                # Rotate the orientation matrix by rz
+                rz_rot_matrix_3x3 = rz_rot_matrix.to_3x3()
+                final_rotation_matrix = rz_rot_matrix_3x3 @ rotated_matrix
+                
+                # Create the final 4x4 world matrix
+                final_world_matrix = final_rotation_matrix.to_4x4()
+                final_world_matrix.translation = final_world_loc
+                
+                # Set the world matrix directly
+                self._transform_target.matrix_world = final_world_matrix
 
                 bpy.context.view_layer.update()
 
