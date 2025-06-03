@@ -320,29 +320,38 @@ class COLLISION_OT_calculate(Operator):
                 z_axis = ACSf_obj.matrix_world.col[2].to_3d().normalized()
                 pivot = ACSf_obj.matrix_world.translation.copy()
 
-                # apply local rx and ry rotations to the original world matrix
+                # STEP 1: Apply RZ rotation first around ACSf z-axis
                 base_rotation_matrix = self._saved_world_matrix.to_3x3()
-                rx_mat = mathutils.Matrix.Rotation(math.radians(rx), 3, 'X')
-                yaxis = self.define_y_axis(props, self._prox_obj, ACSf_obj) # Get the defined y-axis
-                ry_mat = mathutils.Matrix.Rotation(math.radians(ry), 3, yaxis)
-                local_rot = ry_mat @ rx_mat
-                
-                # Apply local rotations to the base rotation
-                rotated_matrix = base_rotation_matrix @ local_rot
-
-                # Now apply rz rotation about ACSf z-axis at ACSf location
                 rz_angle = math.radians(rz)
-                rz_rot_matrix = mathutils.Matrix.Rotation(rz_angle, 4, z_axis)
-
-                # Rotate the location around ACSf pivot
+                rz_rot_matrix_3x3 = mathutils.Matrix.Rotation(rz_angle, 3, z_axis)
+                
+                # Apply RZ rotation to the base rotation matrix
+                rz_rotated_matrix = rz_rot_matrix_3x3 @ base_rotation_matrix
+                
+                # Rotate the location around ACSf pivot for RZ
                 rel_loc = translated_world_loc - pivot
-                final_world_loc = rz_rot_matrix @ rel_loc + pivot
+                rz_rot_matrix_4x4 = mathutils.Matrix.Rotation(rz_angle, 4, z_axis)
+                rz_rotated_loc = rz_rot_matrix_4x4 @ rel_loc + pivot
                 
-                # Rotate the orientation matrix by rz
-                rz_rot_matrix_3x3 = rz_rot_matrix.to_3x3()
-                final_rotation_matrix = rz_rot_matrix_3x3 @ rotated_matrix
+                # STEP 2: Calculate y-axis from the RZ-rotated coordinate system
+                # X axis from RZ-rotated ACSm, Z axis from ACSf (unchanged)
+                x_axis = rz_rotated_matrix.col[0].normalized()
+                if props.rotation_mode_enum == 'INTUITIVE':
+                    y_axis = rz_rotated_matrix.col[1].normalized()
+                else:
+                    # ISB uses floating y = cross(x,z)
+                    y_axis = x_axis.cross(z_axis).normalized()
                 
+                # STEP 3: Apply RY rotation around the calculated y-axis
+                ry_mat = mathutils.Matrix.Rotation(math.radians(ry), 3, y_axis)
+                ry_rotated_matrix = ry_mat @ rz_rotated_matrix
                 
+                # STEP 4: Apply RX rotation around the X-axis (from RZ-rotated system)
+                rx_mat = mathutils.Matrix.Rotation(math.radians(rx), 3, x_axis)
+                final_rotation_matrix = rx_mat @ ry_rotated_matrix
+                
+                # Final location remains from RZ rotation (RY and RX are about object center)
+                final_world_loc = rz_rotated_loc
                 
                 # Create the final 4x4 world matrix
                 final_world_matrix = final_rotation_matrix.to_4x4()
