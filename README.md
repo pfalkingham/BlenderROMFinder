@@ -2,7 +2,7 @@
 
 This Blender addon systematically finds and records all possible 6-DOF (Degrees of Freedom) poses where two selected objects (a "proximal" and a "distal" object) do not collide. It iterates through user-defined ranges of Joint Coordinate System (JCS) rotations and translational offsets, performing collision checks at each step. This tool is particularly valuable for biomechanical studies, virtual paleontology, robotics, and animation.
 
-**Version:** 3.0.1  
+**Version:** 3.0.2  
 **Video Tutorial:** [Watch on YouTube](https://youtu.be/sQL41YbC_TY) *(Note: Video may not reflect the latest features)*
 
 ## Key Features
@@ -22,7 +22,7 @@ The addon now features a unified system with three distinct modes that each comb
    - **Translation:** Applied along the rotated ACSm's local axes after all rotations are complete
    - **Use Case:** Standard biomechanical analysis following ISB guidelines (Grood & Suntay, 1983; Wu et al., 2002)
 
-2. **Intuitive Mode (simplified)**  
+2. **Simplified Mode**  
    - **Rotation:** Similar to ISB but uses the ACSm's Y-axis (after FE rotation) for Adduction/Abduction instead of the floating axis
    - **Translation:** Applied along the rotated ACSm's local axes after all rotations are complete
    - **Use Case:** More visually intuitive for certain constrained joints, reduces "visual twist" artifacts

@@ -142,7 +142,7 @@ class CollisionProperties(PropertyGroup):
         description="...", # Choose rotation AND translation logic
         items=[
             ('ISB_STANDARD', "ISB Standard", "ISB Rotations (floating y-axis) + ACSm Local Post-Rot Translations"),
-            ('INTUITIVE', "Intuitive", "Intuitive Rotations (as ISB but using ACSm Y-axis)+ ACSm Local Post-Rot Translations"), # We need to define "Intuitive Rotations" clearly
+            ('INTUITIVE', "Simplified", "Intuitive Rotations (as ISB but using ACSm Y-axis)+ ACSm Local Post-Rot Translations"), # We need to define "Intuitive Rotations" clearly
             ('MG_HINGE', "M&G Hinge", "M&G Rotations (as intuitive) + M&G Prism Translations")
         ],
         default='MG_HINGE'
