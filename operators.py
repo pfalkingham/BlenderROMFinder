@@ -433,27 +433,6 @@ class COLLISION_OT_calculate(Operator):
 
             translation_mode = getattr(props, 'translation_mode_enum', 'SIMPLE_ACSf') # Default if prop not added yet
 
-            # --- DEBUG PRISM ARROWS SETUP (create once if needed) ---
-            debug_arrows = {}
-            if props.debug_mode and translation_mode == 'MG_PRISM_HINGE':
-                arrow_defs = [
-                    ("MG_PRISM_DEBUG_ARROW_X", (1, 0, 0), (1, 0, 0)),  # Red, X axis
-                    ("MG_PRISM_DEBUG_ARROW_Y", (0, 1, 0), (0, 1, 0)),  # Green, Y axis
-                    ("MG_PRISM_DEBUG_ARROW_Z", (0, 0, 1), (0, 0, 1)),  # Blue, Z axis
-                ]
-                for name, color, axis in arrow_defs:
-                    if name in bpy.data.objects:
-                        debug_arrows[name] = bpy.data.objects[name]
-                    else:
-                        bpy.ops.object.empty_add(type='ARROWS')
-                        arrow = bpy.context.active_object
-                        arrow.name = name
-                        arrow.empty_display_size = 0.3
-                        # Set color using custom viewport display (Blender 3.0+)
-                        if hasattr(arrow, 'color'):
-                            arrow.color = (*color, 1.0)
-                        debug_arrows[name] = arrow
-
             if translation_mode == 'SIMPLE_ACSf':
                 translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
                 # Get the initial translation from the matrix properly
@@ -471,86 +450,8 @@ class COLLISION_OT_calculate(Operator):
             elif translation_mode == 'MG_PRISM_HINGE':
                 # M&G Prism method: translations along axes that rotate with flexion/extension
                 # but maintain anatomical meaning relative to the joint
-                
-                # Get the current Flexion/Extension angle (rot_z from the loop)
-                fe_angle_rad = math.radians(rot_z)
-                fe_rotation_matrix_local_to_ACSf = mathutils.Matrix.Rotation(fe_angle_rad, 4, mathutils.Vector((0,0,1)))
-                
-                # Define anatomical prism axes in ACSm's initial orientation
-                # X = Distraction/Compression (along distal bone long axis)
-                # Y = A-P glide (perpendicular to long axis, in sagittal plane)
-                # Z = M-L shift (perpendicular to both, in frontal plane)
-                
-                if use_ACSm_bone:
-                    # Use the initial ACSm bone orientation to define the long axis
-                    initial_long_axis = self._initial_ACSm_bone_matrix_local.col[0].to_3d().normalized()  # Assuming X is long axis
-                    initial_ap_axis = self._initial_ACSm_bone_matrix_local.col[1].to_3d().normalized()     # Y axis
-                    initial_ml_axis = self._initial_ACSm_bone_matrix_local.col[2].to_3d().normalized()     # Z axis
-                else:
-                    # Use the initial ACSm object orientation
-                    initial_long_axis = self._initial_ACSm_matrix_local.col[0].to_3d().normalized()
-                    initial_ap_axis = self._initial_ACSm_matrix_local.col[1].to_3d().normalized()
-                    initial_ml_axis = self._initial_ACSm_matrix_local.col[2].to_3d().normalized()
-                
-                # Transform these axes to ACSf space at FE=0
-                initial_long_axis_in_ACSf = (self._initial_relative_ACSm_to_ACSf_matrix @ initial_long_axis.to_4d()).to_3d()
-                initial_ap_axis_in_ACSf = (self._initial_relative_ACSm_to_ACSf_matrix @ initial_ap_axis.to_4d()).to_3d()
-                initial_ml_axis_in_ACSf = (self._initial_relative_ACSm_to_ACSf_matrix @ initial_ml_axis.to_4d()).to_3d()
-                
-                # Rotate these axes by the current FE rotation to get the prism orientation
-                current_long_axis = (fe_rotation_matrix_local_to_ACSf @ initial_long_axis_in_ACSf.to_4d()).to_3d()
-                current_ap_axis = (fe_rotation_matrix_local_to_ACSf @ initial_ap_axis_in_ACSf.to_4d()).to_3d()
-                current_ml_axis = (fe_rotation_matrix_local_to_ACSf @ initial_ml_axis_in_ACSf.to_4d()).to_3d()
-                
-                # Calculate the total translational offset in ACSf's local space
-                # trans_x = distraction/compression (along long axis)
-                # trans_y = A-P glide 
-                # trans_z = M-L shift
-                translation_offset_in_ACSf_local_space = \
-                    (current_long_axis * trans_x) + \
-                    (current_ap_axis * trans_y) + \
-                    (current_ml_axis * trans_z)
+                print("not currently implemented")
 
-                if use_ACSm_bone:
-                    initial_local_translation = self._initial_ACSm_bone_matrix_local.translation.copy()
-                else:
-                    initial_local_translation = self._initial_ACSm_matrix_local.translation.copy()
-                final_ACSm_pose_matrix_local.translation = initial_local_translation + translation_offset_in_ACSf_local_space
-
-                # --- DEBUG PRISM ARROWS TRANSFORM & KEYFRAME ---
-                if props.debug_mode and debug_arrows:
-                    # Place arrows at ACSm's world position, align to prism axes, scale to translation
-                    if use_ACSm_bone:
-                        pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
-                        if pose_bone:
-                            base_matrix = ACSm_obj.matrix_world @ pose_bone.matrix
-                    else:
-                        base_matrix = ACSm_obj.matrix_world
-                    # X axis (long axis)
-                    arrow_x = debug_arrows["MG_PRISM_DEBUG_ARROW_X"]
-                    arrow_x.matrix_world = base_matrix.copy()
-                    arrow_x.scale = (max(abs(trans_x), 0.1), 0.5, 0.5)  # Increased by 10x
-                    arrow_x.keyframe_insert(data_path="location", frame=self._debug_frame)
-                    arrow_x.keyframe_insert(data_path="rotation_euler", frame=self._debug_frame)
-                    arrow_x.keyframe_insert(data_path="scale", frame=self._debug_frame)
-                    # Y axis (A-P)
-                    arrow_y = debug_arrows["MG_PRISM_DEBUG_ARROW_Y"]
-                    mat_y = base_matrix.copy()
-                    mat_y @= mathutils.Matrix.Rotation(math.radians(90), 4, 'Z')
-                    arrow_y.matrix_world = mat_y
-                    arrow_y.scale = (max(abs(trans_y), 0.1), 0.5, 0.5)  # Increased by 10x
-                    arrow_y.keyframe_insert(data_path="location", frame=self._debug_frame)
-                    arrow_y.keyframe_insert(data_path="rotation_euler", frame=self._debug_frame)
-                    arrow_y.keyframe_insert(data_path="scale", frame=self._debug_frame)
-                    # Z axis (M-L)
-                    arrow_z = debug_arrows["MG_PRISM_DEBUG_ARROW_Z"]
-                    mat_z = base_matrix.copy()
-                    mat_z @= mathutils.Matrix.Rotation(math.radians(90), 4, 'Y')
-                    arrow_z.matrix_world = mat_z
-                    arrow_z.scale = (max(abs(trans_z), 0.1), 0.5, 0.5)  # Increased by 10x
-                    arrow_z.keyframe_insert(data_path="location", frame=self._debug_frame)
-                    arrow_z.keyframe_insert(data_path="rotation_euler", frame=self._debug_frame)
-                    arrow_z.keyframe_insert(data_path="scale", frame=self._debug_frame)
             else: 
                 self.report({'WARNING'}, f"Unknown translation mode: {translation_mode}. Defaulting to SIMPLE_ACSf.")
                 translation_offset_in_ACSf_local_space = mathutils.Vector((trans_x, trans_y, trans_z))
