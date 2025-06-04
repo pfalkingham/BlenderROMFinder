@@ -136,30 +136,18 @@ class CollisionProperties(PropertyGroup):
         max=90.0
     )
     
-    rot_order: EnumProperty(
-        name="Rotation Order",
-        description="Order in which rotations are applied",
-        items=[
-            ("XYZ", "XYZ", ""),
-            ("XZY", "XZY", ""),
-            ("YXZ", "YXZ", ""),
-            ("YZX", "YZX", ""),
-            ("ZXY", "ZXY", ""),
-            ("ZYX", "ZYX", "")
-        ],
-        default="XYZ"
-    )
-    
+
     rotation_mode_enum: EnumProperty(
         name="Rotation Logic",
-        description="Choose rotation logic: ISB standard (floating Y for AD/AB) or Intuitive (fixed Y for AD/AB)",
+        description="...", # Choose rotation AND translation logic
         items=[
-            ('ISB_STANDARD', "ISB Standard", "Uses a floating Y-axis for Adduction/Abduction, can result in visual twist."),
-            ('INTUITIVE', "Intuitive (Fixed Y)", "Adduction/Abduction always occurs around ACSf's local Y-axis.")
+            ('ISB_STANDARD', "ISB Standard", "ISB Rotations (floating y-axis) + ACSm Local Post-Rot Translations"),
+            ('INTUITIVE', "Intuitive", "Intuitive Rotations (as ISB but using ACSm Y-axis)+ ACSm Local Post-Rot Translations"), # We need to define "Intuitive Rotations" clearly
+            ('MG_HINGE', "M&G Hinge", "M&G Rotations (as intuitive) + M&G Prism Translations")
         ],
-        default='ISB_STANDARD'
+        default='MG_HINGE'
     )
-    
+
     # Translation parameters
     trans_x_min: FloatProperty(
         name="X Min",
@@ -234,51 +222,6 @@ class CollisionProperties(PropertyGroup):
         min=0.001,
         max=10.0,
         precision=4
-    )
-    
-    translation_mode_enum: EnumProperty(
-        name="Translation Mode",
-        description="Define how translational offsets are applied relative to the coordinate systems.",
-        items=[
-            ('SIMPLE_ACSf', "Simple (ACSf Local)", "Translations along ACSf's fixed local axes, applied before JCS rotation conceptually."),
-            ('ACSM_LOCAL_POST_ROT', "ACSm Local (Post-Rotation)", "Translations along ACSm's axes after all JCS rotations have been applied."),
-            ('MG_PRISM_HINGE', "M&G Prism (Hinge)", "Translations along M&G prism axes that rotate with Flexion/Extension (primarily for hinge joints). Assumes FE is rot_z.")
-        ],
-        default='MG_PRISM_HINGE'
-    )
-    
-    mg_prism_distraction_axis_map: EnumProperty(
-        name="Prism: Distraction/Compression Axis (for trans_x)",
-        description="Which local axis of ACSf (at FE=0) represents Distraction/Compression. Loop's trans_x will be applied along this initial direction (rotated by current FE).",
-        items=[('X', "ACSf Local X", "Distraction/Compression along ACSf's initial local X-axis"),
-               ('Y', "ACSf Local Y", "Distraction/Compression along ACSf's initial local Y-axis"),
-               ('Z', "ACSf Local Z", "Distraction/Compression along ACSf's initial local Z-axis"),
-               ('NEGATIVE_X', "ACSf Local -X", "Distraction/Compression along ACSf's initial local -X-axis"),
-               ('NEGATIVE_Y', "ACSf Local -Y", "Distraction/Compression along ACSf's initial local -Y-axis"),
-               ('NEGATIVE_Z', "ACSf Local -Z", "Distraction/Compression along ACSf's initial local -Z-axis")],
-        default='X'
-    )
-    mg_prism_ap_glide_axis_map: EnumProperty(
-        name="Prism: AP-Glide Axis (for trans_y)",
-        description="Which local axis of ACSf (at FE=0) represents Anterior/Posterior Glide. Loop's trans_y will be applied along this initial direction (rotated by current FE).",
-        items=[('X', "ACSf Local X", "AP-Glide along ACSf's initial local X-axis"),
-               ('Y', "ACSf Local Y", "AP-Glide along ACSf's initial local Y-axis"),
-               ('Z', "ACSf Local Z", "AP-Glide along ACSf's initial local Z-axis"),
-               ('NEGATIVE_X', "ACSf Local -X", "AP-Glide along ACSf's initial local -X-axis"),
-               ('NEGATIVE_Y', "ACSf Local -Y", "AP-Glide along ACSf's initial local -Y-axis"),
-               ('NEGATIVE_Z', "ACSf Local -Z", "AP-Glide along ACSf's initial local -Z-axis")],
-        default='Y'
-    )
-    mg_prism_ml_shift_axis_map: EnumProperty(
-        name="Prism: ML-Shift Axis (for trans_z)",
-        description="Which local axis of ACSf (at FE=0) represents Medio/Lateral Shift. Loop's trans_z will be applied along this initial direction (rotated by current FE).",
-        items=[('X', "ACSf Local X", "ML-Shift along ACSf's initial local X-axis"),
-               ('Y', "ACSf Local Y", "ML-Shift along ACSf's initial local Y-axis"),
-               ('Z', "ACSf Local Z", "ML-Shift along ACSf's initial local Z-axis"),
-               ('NEGATIVE_X', "ACSf Local -X", "ML-Shift along ACSf's initial local -X-axis"),
-               ('NEGATIVE_Y', "ACSf Local -Y", "ML-Shift along ACSf's initial local -Y-axis"),
-               ('NEGATIVE_Z', "ACSf Local -Z", "ML-Shift along ACSf's initial local -Z-axis")],
-        default='Z'
     )
     
     use_convex_hull_optimization: BoolProperty(
