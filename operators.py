@@ -170,83 +170,6 @@ class COLLISION_OT_calculate(Operator):
         
         return current_transform
 
-    def _calculate_pose_for_isb_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
-        # Rotation: Standard ISB (FE around ACSf_Z, AD/AB floating Y', LAR around final ACSm_X)
-        # Temporarily set props.rotation_mode_enum for _get_jcs_rotation_part
-        # This is a bit hacky; ideally, _get_jcs_rotation_part takes the mode directly
-        original_rot_mode = getattr(props, 'rotation_mode_enum', 'ISB_STANDARD')
-        props.rotation_mode_enum = 'ISB_STANDARD' 
-        jcs_orientation_matrix = self._get_jcs_rotation_part(rz_deg, ry_deg, rx_deg, props)
-        props.rotation_mode_enum = original_rot_mode # Restore
-
-        target_rotated_pose_local = acsm_initial_local_matrix @ jcs_orientation_matrix
-
-        # Translation: Along ACSm's axes AFTER ISB rotation
-        translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
-        translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
-        
-        final_matrix = target_rotated_pose_local @ translation_matrix_offset
-        return final_matrix
-
-    def _calculate_pose_for_intuitive_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
-        # Rotation: FE (ACSf_Z), AD/AB (ACSm_Y_after_FE), LAR (ACSm_X_after_FE_and_ADAB)
-        original_rot_mode = getattr(props, 'rotation_mode_enum', 'ISB_STANDARD')
-        props.rotation_mode_enum = 'INTUITIVE_ACSM_Y_FOR_ADAB' # Signal to _get_jcs_rotation_part
-        jcs_orientation_matrix = self._get_jcs_rotation_part(rz_deg, ry_deg, rx_deg, props)
-        props.rotation_mode_enum = original_rot_mode
-
-        target_rotated_pose_local = acsm_initial_local_matrix @ jcs_orientation_matrix
-
-        # Translation: Along ACSm's axes AFTER "Intuitive" rotation
-        translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
-        translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
-
-        final_matrix = target_rotated_pose_local @ translation_matrix_offset
-        return final_matrix
-
-    def _get_local_axis_vector_from_prop_str(self, axis_prop_val_str): # Helper
-        if axis_prop_val_str == 'X': return Vector((1,0,0))
-        if axis_prop_val_str == 'Y': return Vector((0,1,0))
-        if axis_prop_val_str == 'Z': return Vector((0,0,1))
-        if axis_prop_val_str == 'NEGATIVE_X': return Vector((-1,0,0))
-        if axis_prop_val_str == 'NEGATIVE_Y': return Vector((0,-1,0))
-        if axis_prop_val_str == 'NEGATIVE_Z': return Vector((0,0,-1))
-        self.report({'WARNING'}, f"Unknown prism axis string: {axis_prop_val_str}. Defaulting to X.")
-        return Vector((1,0,0))
-
-    def _calculate_pose_for_mg_hinge_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
-        # Rotation: Assumed Z_proximal (ACSf_Z) -> Y_mobile (ACSm_Y_after_FE) -> X_mobile (ACSm_X_after_FE_and_Y)
-        # Same as "Intuitive" mode's rotation part.
-        original_rot_mode = getattr(props, 'rotation_mode_enum', 'ISB_STANDARD')
-        props.rotation_mode_enum = 'INTUITIVE_ACSM_Y_FOR_ADAB' 
-        jcs_orientation_matrix = self._get_jcs_rotation_part(rz_deg, ry_deg, rx_deg, props)
-        props.rotation_mode_enum = original_rot_mode
-
-        target_rotated_pose_local = acsm_initial_local_matrix @ jcs_orientation_matrix
-        final_matrix = target_rotated_pose_local.copy() # Start with orientation
-
-        # Translation: M&G Prism Method
-        initial_prism_dir_for_tx = self._get_local_axis_vector_from_prop_str(getattr(props, 'mg_prism_distraction_axis_map', 'X'))
-        initial_prism_dir_for_ty = self._get_local_axis_vector_from_prop_str(getattr(props, 'mg_prism_ap_glide_axis_map', 'Y'))
-        initial_prism_dir_for_tz = self._get_local_axis_vector_from_prop_str(getattr(props, 'mg_prism_ml_shift_axis_map', 'Z'))
-
-        fe_angle_rad = math.radians(rz_deg) # rz_deg is FE from loop
-        fe_only_rot_matrix = Matrix.Rotation(fe_angle_rad, 4, Vector((0,0,1))) # FE around ACSf local Z
-
-        current_prism_dir_for_tx = (fe_only_rot_matrix @ initial_prism_dir_for_tx.to_4d()).to_3d()
-        current_prism_dir_for_ty = (fe_only_rot_matrix @ initial_prism_dir_for_ty.to_4d()).to_3d()
-        current_prism_dir_for_tz = (fe_only_rot_matrix @ initial_prism_dir_for_tz.to_4d()).to_3d()
-
-        translation_offset_ACSf_local = \
-            (current_prism_dir_for_tx * tx) + \
-            (current_prism_dir_for_ty * ty) + \
-            (current_prism_dir_for_tz * tz)
-        
-        initial_local_translation = acsm_initial_local_matrix.to_translation()
-        final_matrix.translation = initial_local_translation + translation_offset_ACSf_local
-        
-        return final_matrix
-
     # --- Main Execution Flow ---
     def initialize_calculation(self, context):
         # Explicitly initialize potentially optional instance attributes to None
@@ -563,17 +486,6 @@ class COLLISION_OT_calculate(Operator):
 
         final_matrix = target_rotated_pose_local @ translation_matrix_offset
         return final_matrix
-
-    def _get_local_axis_vector_from_prop_str(self, axis_prop_val_str): # You might already have this
-        if axis_prop_val_str == 'X': return Vector((1,0,0))
-        if axis_prop_val_str == 'Y': return Vector((0,1,0))
-        if axis_prop_val_str == 'Z': return Vector((0,0,1))
-        if axis_prop_val_str == 'NEGATIVE_X': return Vector((-1,0,0))
-        if axis_prop_val_str == 'NEGATIVE_Y': return Vector((0,-1,0))
-        if axis_prop_val_str == 'NEGATIVE_Z': return Vector((0,0,-1))
-        # self.report({'WARNING'}, f"Unknown prism axis string: {axis_prop_val_str}. Defaulting to X.")
-        print(f"WARNING: Unknown prism axis string for M&G Prism: {axis_prop_val_str}. Defaulting to X.")
-        return Vector((1,0,0)) 
 
     def _calculate_pose_for_mg_hinge_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
 
