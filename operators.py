@@ -310,7 +310,7 @@ class COLLISION_OT_calculate(Operator):
                 collision = self.check_collision(self._prox_obj, self._dist_obj, self._prox_bvh)
                 self._csv_data.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
                 
-                if not collision and props.visualize_collisions:
+                if (not collision and props.visualize_collisions) or (props.debug_mode):
                     # ... (your keyframing logic) ...
                     target_for_keyframe = ACSm_obj
                     if use_ACSm_bone: target_for_keyframe = ACSm_obj.pose.bones.get(ACSm_bone_name)
@@ -464,62 +464,86 @@ class COLLISION_OT_calculate(Operator):
 
     def _calculate_pose_for_isb_standard_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
         
+        # Get rotation matrix based on angles
         jcs_orientation_matrix = self._calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=True)
-        target_rotated_pose_local = acsm_initial_local_matrix @ jcs_orientation_matrix
-
-        # Translation: Along ACSm's axes AFTER ISB rotation
-        translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
-        translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
         
-        final_matrix = target_rotated_pose_local @ translation_matrix_offset
+        # Extract the translation part from the initial matrix
+        initial_translation = acsm_initial_local_matrix.to_translation()
+        
+        # Create a new matrix that combines the new rotation with the original translation
+        target_rotated_pose_local = jcs_orientation_matrix.copy()
+        target_rotated_pose_local.translation = initial_translation
+        
+        # Add additional translation in the rotated coordinate system
+        if tx != 0 or ty != 0 or tz != 0:  # Only apply if there's a non-zero translation
+            translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
+            # Apply this translation in the rotated coordinate system
+            translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
+            final_matrix = target_rotated_pose_local @ translation_matrix_offset
+        else:
+            final_matrix = target_rotated_pose_local
+            
         return final_matrix
 
 
     def _calculate_pose_for_intuitive_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
  
+        # Get rotation matrix based on angles
         jcs_orientation_matrix = self._calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=False)
-        target_rotated_pose_local = acsm_initial_local_matrix @ jcs_orientation_matrix
+        
+        # Extract the translation part from the initial matrix
+        initial_translation = acsm_initial_local_matrix.to_translation()
+        
+        # Create a new matrix that combines the new rotation with the original translation
+        target_rotated_pose_local = jcs_orientation_matrix.copy()
+        target_rotated_pose_local.translation = initial_translation
 
-        # Translation: Along ACSm's axes AFTER "Intuitive" rotation
-        translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
-        translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
-
-        final_matrix = target_rotated_pose_local @ translation_matrix_offset
+        # Add additional translation in the rotated coordinate system
+        if tx != 0 or ty != 0 or tz != 0:  # Only apply if there's a non-zero translation
+            translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
+            # Apply this translation in the rotated coordinate system
+            translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
+            final_matrix = target_rotated_pose_local @ translation_matrix_offset
+        else:
+            final_matrix = target_rotated_pose_local
+            
         return final_matrix
 
     def _calculate_pose_for_mg_hinge_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
 
-        # Rotation part: Z_ACSf -> Y_ACSm_after_FE -> X_ACSm_after_FE_and_ADAB
+        # Get rotation matrix based on angles
         jcs_orientation_matrix = self._calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=False)
-        target_rotated_pose_local = acsm_initial_local_matrix @ jcs_orientation_matrix
         
-        final_matrix_with_rotation = target_rotated_pose_local.copy()
-
-        # Translation: M&G Prism Method with fixed initial prism axes (ACSf local X, Y, Z)
-        # trans_x from loop corresponds to initial ACSf local X direction (for Distraction/Compression if ACSf X is aligned that way)
-        # trans_y from loop corresponds to initial ACSf local Y direction (for AP-Glide if ACSf Y is aligned that way)
-        # trans_z from loop corresponds to initial ACSf local Z direction (for ML-Shift if ACSf Z is aligned that way)
-
-        initial_prism_axis_for_tx = Vector((1,0,0)) # ACSf local X
-        initial_prism_axis_for_ty = Vector((0,1,0)) # ACSf local Y
-        initial_prism_axis_for_tz = Vector((0,0,1)) # ACSf local Z
+        # Extract the translation part from the initial matrix
+        initial_translation = acsm_initial_local_matrix.to_translation()
         
-        fe_angle_rad = math.radians(rz_deg) # rz_deg is FE from loop
-        fe_only_rot_matrix = Matrix.Rotation(fe_angle_rad, 4, Vector((0,0,1))) # FE around ACSf local Z
+        # Create a new matrix that combines the new rotation with the original translation
+        final_matrix_with_rotation = jcs_orientation_matrix.copy()
+        final_matrix_with_rotation.translation = initial_translation
 
-        # Rotate these initial prism axes by the current FE rotation.
-        current_direction_for_tx = (fe_only_rot_matrix @ initial_prism_axis_for_tx.to_4d()).to_3d()
-        current_direction_for_ty = (fe_only_rot_matrix @ initial_prism_axis_for_ty.to_4d()).to_3d()
-        current_direction_for_tz = (fe_only_rot_matrix @ initial_prism_axis_for_tz.to_4d()).to_3d()
+        # Only compute and apply translation if there's a non-zero translation component
+        if tx != 0 or ty != 0 or tz != 0:
+            # Translation: M&G Prism Method with fixed initial prism axes (ACSf local X, Y, Z)
+            initial_prism_axis_for_tx = Vector((1,0,0)) # ACSf local X
+            initial_prism_axis_for_ty = Vector((0,1,0)) # ACSf local Y
+            initial_prism_axis_for_tz = Vector((0,0,1)) # ACSf local Z
+            
+            fe_angle_rad = math.radians(rz_deg) # rz_deg is FE from loop
+            fe_only_rot_matrix = Matrix.Rotation(fe_angle_rad, 4, Vector((0,0,1))) # FE around ACSf local Z
 
-        # Calculate the total translational offset in ACSf's local space
-        translation_offset_ACSf_local = \
-            (current_direction_for_tx * tx) + \
-            (current_direction_for_ty * ty) + \
-            (current_direction_for_tz * tz)
-        
-        initial_local_translation = acsm_initial_local_matrix.to_translation()
-        final_matrix_with_rotation.translation = initial_local_translation + translation_offset_ACSf_local
+            # Rotate these initial prism axes by the current FE rotation.
+            current_direction_for_tx = (fe_only_rot_matrix @ initial_prism_axis_for_tx.to_4d()).to_3d()
+            current_direction_for_ty = (fe_only_rot_matrix @ initial_prism_axis_for_ty.to_4d()).to_3d()
+            current_direction_for_tz = (fe_only_rot_matrix @ initial_prism_axis_for_tz.to_4d()).to_3d()
+
+            # Calculate the total translational offset in ACSf's local space
+            translation_offset_ACSf_local = \
+                (current_direction_for_tx * tx) + \
+                (current_direction_for_ty * ty) + \
+                (current_direction_for_tz * tz)
+            
+            # Apply this translation offset to the final matrix
+            final_matrix_with_rotation.translation = initial_translation + translation_offset_ACSf_local
         
         return final_matrix_with_rotation
 
@@ -577,5 +601,4 @@ class COLLISION_OT_calculate(Operator):
         else: # If not initialized, just ensure the flag is off
             props.is_calculating = False
         return {'CANCELLED'}
-    
-    
+
