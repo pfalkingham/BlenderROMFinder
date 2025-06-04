@@ -459,6 +459,13 @@ class COLLISION_OT_calculate(Operator):
         mat_lar = Matrix.Rotation(math.radians(rx_deg), 4, axis_lar)
         current_transform = current_transform @ mat_lar
         
+        print(f"FINAL CT for Rz={rz_deg}, Ry={ry_deg}, Rx={rx_deg}")
+        print(f"CT.col[0]: {current_transform.col[0].to_3d().normalized()}") # ACSm X in ACSf
+        print(f"CT.col[1]: {current_transform.col[1].to_3d().normalized()}") # ACSm Y in ACSf
+        print(f"CT.col[2]: {current_transform.col[2].to_3d().normalized()}") # ACSm Z in ACSf
+        eul = current_transform.to_euler('XYZ') # Match Blender default UI
+        print(f"Blender XYZ Euler: X={math.degrees(eul.x):.1f} Y={math.degrees(eul.y):.1f} Z={math.degrees(eul.z):.1f}")
+
         return current_transform
     
 
