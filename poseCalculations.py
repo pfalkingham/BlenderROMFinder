@@ -72,48 +72,68 @@ def calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_
 
 def calculate_pose_for_isb_standard_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
     jcs_orientation_matrix = calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=True)
-    initial_translation = acsm_initial_local_matrix.to_translation()
-    target_rotated_pose_local = jcs_orientation_matrix.copy()
-    target_rotated_pose_local.translation = initial_translation
+    
+    # Apply JCS rotations relative to the initial pose of ACSm
+    base_pose_with_jcs = acsm_initial_local_matrix @ jcs_orientation_matrix
+
     if tx != 0 or ty != 0 or tz != 0:
         translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
         translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
-        final_matrix = target_rotated_pose_local @ translation_matrix_offset
+        # Apply translation offset in the new local frame of ACSm
+        final_matrix = base_pose_with_jcs @ translation_matrix_offset
     else:
-        final_matrix = target_rotated_pose_local
+        final_matrix = base_pose_with_jcs
     return final_matrix
 
 def calculate_pose_for_intuitive_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
     jcs_orientation_matrix = calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=False)
-    initial_translation = acsm_initial_local_matrix.to_translation()
-    target_rotated_pose_local = jcs_orientation_matrix.copy()
-    target_rotated_pose_local.translation = initial_translation
+
+    # Apply JCS rotations relative to the initial pose of ACSm
+    base_pose_with_jcs = acsm_initial_local_matrix @ jcs_orientation_matrix
+
     if tx != 0 or ty != 0 or tz != 0:
         translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
         translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
-        final_matrix = target_rotated_pose_local @ translation_matrix_offset
+        # Apply translation offset in the new local frame of ACSm
+        final_matrix = base_pose_with_jcs @ translation_matrix_offset
     else:
-        final_matrix = target_rotated_pose_local
+        final_matrix = base_pose_with_jcs
     return final_matrix
 
 def calculate_pose_for_mg_hinge_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
     jcs_orientation_matrix = calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=False)
-    initial_translation = acsm_initial_local_matrix.to_translation()
-    final_matrix_with_rotation = jcs_orientation_matrix.copy()
-    final_matrix_with_rotation.translation = initial_translation
+
+    # Apply JCS rotations relative to the initial pose of ACSm
+    base_pose_with_jcs = acsm_initial_local_matrix @ jcs_orientation_matrix
+
     if tx != 0 or ty != 0 or tz != 0:
+        # MG_HINGE mode has a special translation logic.
+        # The rotation is from base_pose_with_jcs.
+        # The translation starts from acsm_initial_local_matrix.to_translation()
+        # and adds an offset calculated based on FE angle in ACSf frame.
+        final_matrix = base_pose_with_jcs.copy() # This has the correct rotation and initial translation part
+
         initial_prism_axis_for_tx = Vector((1,0,0))
         initial_prism_axis_for_ty = Vector((0,1,0))
         initial_prism_axis_for_tz = Vector((0,0,1))
+
         fe_angle_rad = math.radians(rz_deg)
-        fe_only_rot_matrix = Matrix.Rotation(fe_angle_rad, 4, Vector((0,0,1)))
-        current_direction_for_tx = (fe_only_rot_matrix @ initial_prism_axis_for_tx.to_4d()).to_3d()
-        current_direction_for_ty = (fe_only_rot_matrix @ initial_prism_axis_for_ty.to_4d()).to_3d()
-        current_direction_for_tz = (fe_only_rot_matrix @ initial_prism_axis_for_tz.to_4d()).to_3d()
-        translation_offset_ACSf_local = (
-            (current_direction_for_tx * tx) +
-            (current_direction_for_ty * ty) +
-            (current_direction_for_tz * tz)
+        # This rotation is around ACSf's Z axis, used to determine translation directions in ACSf
+        fe_only_rot_matrix_in_acsf = Matrix.Rotation(fe_angle_rad, 4, Vector((0,0,1)))
+
+        # Calculate translation directions in ACSf frame, influenced by FE angle
+        dir_tx_in_acsf = (fe_only_rot_matrix_in_acsf @ initial_prism_axis_for_tx.to_4d()).to_3d()
+        dir_ty_in_acsf = (fe_only_rot_matrix_in_acsf @ initial_prism_axis_for_ty.to_4d()).to_3d()
+        dir_tz_in_acsf = (fe_only_rot_matrix_in_acsf @ initial_prism_axis_for_tz.to_4d()).to_3d()
+
+        # Calculate the total translation offset in the ACSf frame
+        translation_offset_in_acsf = (
+            (dir_tx_in_acsf * tx) +
+            (dir_ty_in_acsf * ty) +
+            (dir_tz_in_acsf * tz)
         )
-        final_matrix_with_rotation.translation = initial_translation + translation_offset_ACSf_local
-    return final_matrix_with_rotation
+        # Add this offset to the original translation from acsm_initial_local_matrix
+        final_matrix.translation = acsm_initial_local_matrix.to_translation() + translation_offset_in_acsf
+    else:
+        final_matrix = base_pose_with_jcs
+    return final_matrix
