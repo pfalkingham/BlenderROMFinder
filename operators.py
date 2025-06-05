@@ -9,6 +9,13 @@ import json
 import time
 from mathutils import Matrix, Vector # Explicitly import Vector
 from bpy.types import Operator
+from .poseCalculations import (
+    get_jcs_rotation_part,
+    calculate_jcs_orientation_matrix_local_to_acsf,
+    calculate_pose_for_isb_standard_mode,
+    calculate_pose_for_intuitive_mode,
+    calculate_pose_for_mg_hinge_mode
+)
 
 class COLLISION_OT_cancel(Operator):
     """Cancel the current collision calculation"""
@@ -119,56 +126,6 @@ class COLLISION_OT_calculate(Operator):
             return True 
 
         return len(self._prox_bvh.overlap(dist_bvh_original_mesh)) > 0
-
-    # --- JCS Calculation Helper Methods ---
-
-    def _get_jcs_rotation_part(self, rz_deg, ry_deg, rx_deg, props):
-        """Calculates the 3-DOF JCS orientation matrix, local to ACSf."""
-        current_transform = Matrix.Identity(4) # Start with ACSm aligned with ACSf (local space)
-
-        # 1. Flexion/Extension (around ACSf's local Z)
-        axis_fe = Vector((0, 0, 1)) # ACSf's local Z
-        mat_fe = Matrix.Rotation(math.radians(rz_deg), 4, axis_fe)
-        current_transform = current_transform @ mat_fe
-
-        # 2. Adduction/Abduction - Logic depends on props.rotation_mode_enum
-        axis_adab = Vector((0,1,0)) # Initialize / Default for safety
-        
-        # Get the main operational mode (which dictates rotation and translation)
-        # Default to ISB if the prop isn't there for some reason during early init
-        operational_mode = getattr(props, 'rotation_mode_enum', 'ISB_STANDARD') 
-
-        if operational_mode == 'ISB_STANDARD':
-            # ISB Standard: Floating Y' axis = ACSf_Z.cross(ACSm_X_after_FE)
-            x_axis_of_acsm_after_fe_in_acsf_frame = current_transform.col[0].to_3d().normalized()
-            axis_adab = axis_fe.cross(x_axis_of_acsm_after_fe_in_acsf_frame) 
-            if axis_adab.length < 1e-8: 
-                axis_adab = Vector((0, 1, 0)) 
-                # self.report({'WARNING'}, "ISB AD/AB axis undefined. Using ACSf Y fallback.")
-            else:
-                axis_adab.normalize()
-        elif operational_mode == 'INTUITIVE' or operational_mode == 'MG_HINGE':
-            # 'Intuitive' & 'M&G Hinge' AD/AB style: Around ACSm's Y-axis (which has been reoriented by FE).
-            # This axis is the current Y-column of current_transform (representing ACSm's Y in ACSf's frame).
-            axis_adab = current_transform.col[1].to_3d().normalized()
-            if axis_adab.length < 1e-8: 
-                 axis_adab = Vector((0,1,0)) # Fallback
-                 # self.report({'WARNING'}, "Intuitive/MG AD/AB axis (ACSm Y after FE) near zero. Using ACSf Y fallback.")
-        else:
-            # Fallback for any other unknown rotation_mode_enum value
-            self.report({'WARNING'}, f"Unknown rotation_mode_enum '{operational_mode}' in _get_jcs_rotation_part. Defaulting AD/AB to ACSf Y.")
-            axis_adab = Vector((0,1,0))
-
-
-        mat_adab = Matrix.Rotation(math.radians(ry_deg), 4, axis_adab)
-        current_transform = current_transform @ mat_adab
-
-        # 3. Long-Axis Rotation (around ACSm's *new* local X, after FE and AD/AB)
-        axis_lar = Vector((1, 0, 0)) 
-        mat_lar = Matrix.Rotation(math.radians(rx_deg), 4, axis_lar)
-        current_transform = current_transform @ mat_lar
-        
-        return current_transform
 
     # --- Main Execution Flow ---
     def initialize_calculation(self, context):
@@ -291,11 +248,11 @@ class COLLISION_OT_calculate(Operator):
             operational_mode = getattr(props, 'rotation_mode_enum', 'MG_HINGE') # Default to your current default
 
             if operational_mode == 'ISB_STANDARD':
-                final_ACSm_pose_matrix_local = self._calculate_pose_for_isb_standard_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc)
+                final_ACSm_pose_matrix_local = calculate_pose_for_isb_standard_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc)
             elif operational_mode == 'INTUITIVE':
-                final_ACSm_pose_matrix_local = self._calculate_pose_for_intuitive_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc)
+                final_ACSm_pose_matrix_local = calculate_pose_for_intuitive_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc)
             elif operational_mode == 'MG_HINGE':
-                final_ACSm_pose_matrix_local = self._calculate_pose_for_mg_hinge_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc)
+                final_ACSm_pose_matrix_local = calculate_pose_for_mg_hinge_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc)
             else:
                 self.report({'WARNING'}, f"Unknown operational_mode: {operational_mode}. Skipping pose.")
             
@@ -311,10 +268,23 @@ class COLLISION_OT_calculate(Operator):
                 self._csv_data.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
                 
                 if (not collision and props.visualize_collisions) or (props.debug_mode):
-                    # ... (your keyframing logic) ...
                     target_for_keyframe = ACSm_obj
                     if use_ACSm_bone: target_for_keyframe = ACSm_obj.pose.bones.get(ACSm_bone_name)
                     if target_for_keyframe:
+                        # Set custom properties for input rotations and translations
+                        target_for_keyframe["input_rot_x"] = rx
+                        target_for_keyframe["input_rot_y"] = ry
+                        target_for_keyframe["input_rot_z"] = rz
+                        target_for_keyframe["input_trans_x"] = tx
+                        target_for_keyframe["input_trans_y"] = ty
+                        target_for_keyframe["input_trans_z"] = tz
+                        # Insert keyframes for these custom properties
+                        target_for_keyframe.keyframe_insert(data_path='["input_rot_x"]', frame=self._non_collision_frame)
+                        target_for_keyframe.keyframe_insert(data_path='["input_rot_y"]', frame=self._non_collision_frame)
+                        target_for_keyframe.keyframe_insert(data_path='["input_rot_z"]', frame=self._non_collision_frame)
+                        target_for_keyframe.keyframe_insert(data_path='["input_trans_x"]', frame=self._non_collision_frame)
+                        target_for_keyframe.keyframe_insert(data_path='["input_trans_y"]', frame=self._non_collision_frame)
+                        target_for_keyframe.keyframe_insert(data_path='["input_trans_z"]', frame=self._non_collision_frame)
                         target_for_keyframe.keyframe_insert(data_path="location", frame=self._non_collision_frame)
                         target_for_keyframe.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
                     self._non_collision_frame += 1
@@ -411,150 +381,6 @@ class COLLISION_OT_calculate(Operator):
         for attr in attrs_to_clear:
             if hasattr(self, attr): delattr(self, attr)
 
-
-##### New functions for JCS orientation matrix calculation #####
-
-    def _calculate_jcs_orientation_matrix_local_to_acsf(self, rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard):
-        # rz_deg: Flexion/Extension angle
-        # ry_deg: Adduction/Abduction angle
-        # rx_deg: Long-Axis Rotation angle
-        # adab_mode_is_isb_standard: Boolean. True for ISB floating Y', False for 'Intuitive' (ACSm's Y after FE).
-
-        current_transform = Matrix.Identity(4) # Start with ACSm aligned with ACSf (local space)
-
-        # 1. Flexion/Extension (around ACSf's local Z)
-        axis_fe = Vector((0, 0, 1)) # ACSf's local Z
-        mat_fe = Matrix.Rotation(math.radians(rz_deg), 4, axis_fe)
-        current_transform = current_transform @ mat_fe
-
-        # 2. Adduction/Abduction
-        axis_adab = Vector((0,1,0)) # Default, will be overwritten
-
-        if adab_mode_is_isb_standard:
-            # ISB Standard: Floating Y' axis = ACSf_Z.cross(ACSm_X_after_FE)
-            x_axis_of_acsm_after_fe_in_acsf_frame = current_transform.col[0].to_3d().normalized()
-            axis_adab = axis_fe.cross(x_axis_of_acsm_after_fe_in_acsf_frame)
-            if axis_adab.length < 1e-8: # Gimbal or alignment check
-                # Fallback if cross product is zero (e.g., FE aligns ACSm's X with ACSf's Z)
-                # This situation means the floating Y is undefined by cross product.
-                # Using ACSf's Y might be a reasonable, though not strictly ISB, fallback.
-                # Or report an error/warning. For now, fallback to ACSf's Y.
-                axis_adab = Vector((0, 1, 0))
-                # self.report({'WARNING'}, "ISB AD/AB axis undefined, potential gimbal. Using ACSf Y.")
-            else:
-                axis_adab.normalize()
-        else:
-            # 'Intuitive' / 'M&G Hinge' AD/AB: Around ACSm's Y-axis (which has been reoriented by FE).
-            # This axis is the current Y-column of current_transform, expressed in ACSf's frame.
-            axis_adab = current_transform.col[1].to_3d().normalized()
-            if axis_adab.length < 1e-8: # Should not happen if current_transform is a valid rotation
-                 axis_adab = Vector((0,1,0)) # Fallback
-
-        mat_adab = Matrix.Rotation(math.radians(ry_deg), 4, axis_adab)
-        current_transform = current_transform @ mat_adab
-
-        # 3. Long-Axis Rotation (around ACSm's new local X, after FE and AD/AB)
-        # This rotation is around the X-axis of the coordinate system defined by current_transform.
-        axis_lar = Vector((1, 0, 0)) 
-        mat_lar = Matrix.Rotation(math.radians(rx_deg), 4, axis_lar)
-        current_transform = current_transform @ mat_lar
-        
-        print(f"FINAL CT for Rz={rz_deg}, Ry={ry_deg}, Rx={rx_deg}")
-        print(f"CT.col[0]: {current_transform.col[0].to_3d().normalized()}") # ACSm X in ACSf
-        print(f"CT.col[1]: {current_transform.col[1].to_3d().normalized()}") # ACSm Y in ACSf
-        print(f"CT.col[2]: {current_transform.col[2].to_3d().normalized()}") # ACSm Z in ACSf
-        eul = current_transform.to_euler('XYZ') # Match Blender default UI
-        print(f"Blender XYZ Euler: X={math.degrees(eul.x):.1f} Y={math.degrees(eul.y):.1f} Z={math.degrees(eul.z):.1f}")
-
-        return current_transform
-    
-
-    def _calculate_pose_for_isb_standard_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
-        
-        # Get rotation matrix based on angles
-        jcs_orientation_matrix = self._calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=True)
-        
-        # Extract the translation part from the initial matrix
-        initial_translation = acsm_initial_local_matrix.to_translation()
-        
-        # Create a new matrix that combines the new rotation with the original translation
-        target_rotated_pose_local = jcs_orientation_matrix.copy()
-        target_rotated_pose_local.translation = initial_translation
-        
-        # Add additional translation in the rotated coordinate system
-        if tx != 0 or ty != 0 or tz != 0:  # Only apply if there's a non-zero translation
-            translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
-            # Apply this translation in the rotated coordinate system
-            translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
-            final_matrix = target_rotated_pose_local @ translation_matrix_offset
-        else:
-            final_matrix = target_rotated_pose_local
-            
-        return final_matrix
-
-
-    def _calculate_pose_for_intuitive_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
- 
-        # Get rotation matrix based on angles
-        jcs_orientation_matrix = self._calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=False)
-        
-        # Extract the translation part from the initial matrix
-        initial_translation = acsm_initial_local_matrix.to_translation()
-        
-        # Create a new matrix that combines the new rotation with the original translation
-        target_rotated_pose_local = jcs_orientation_matrix.copy()
-        target_rotated_pose_local.translation = initial_translation
-
-        # Add additional translation in the rotated coordinate system
-        if tx != 0 or ty != 0 or tz != 0:  # Only apply if there's a non-zero translation
-            translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
-            # Apply this translation in the rotated coordinate system
-            translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
-            final_matrix = target_rotated_pose_local @ translation_matrix_offset
-        else:
-            final_matrix = target_rotated_pose_local
-            
-        return final_matrix
-
-    def _calculate_pose_for_mg_hinge_mode(self, rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
-
-        # Get rotation matrix based on angles
-        jcs_orientation_matrix = self._calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=False)
-        
-        # Extract the translation part from the initial matrix
-        initial_translation = acsm_initial_local_matrix.to_translation()
-        
-        # Create a new matrix that combines the new rotation with the original translation
-        final_matrix_with_rotation = jcs_orientation_matrix.copy()
-        final_matrix_with_rotation.translation = initial_translation
-
-        # Only compute and apply translation if there's a non-zero translation component
-        if tx != 0 or ty != 0 or tz != 0:
-            # Translation: M&G Prism Method with fixed initial prism axes (ACSf local X, Y, Z)
-            initial_prism_axis_for_tx = Vector((1,0,0)) # ACSf local X
-            initial_prism_axis_for_ty = Vector((0,1,0)) # ACSf local Y
-            initial_prism_axis_for_tz = Vector((0,0,1)) # ACSf local Z
-            
-            fe_angle_rad = math.radians(rz_deg) # rz_deg is FE from loop
-            fe_only_rot_matrix = Matrix.Rotation(fe_angle_rad, 4, Vector((0,0,1))) # FE around ACSf local Z
-
-            # Rotate these initial prism axes by the current FE rotation.
-            current_direction_for_tx = (fe_only_rot_matrix @ initial_prism_axis_for_tx.to_4d()).to_3d()
-            current_direction_for_ty = (fe_only_rot_matrix @ initial_prism_axis_for_ty.to_4d()).to_3d()
-            current_direction_for_tz = (fe_only_rot_matrix @ initial_prism_axis_for_tz.to_4d()).to_3d()
-
-            # Calculate the total translational offset in ACSf's local space
-            translation_offset_ACSf_local = \
-                (current_direction_for_tx * tx) + \
-                (current_direction_for_ty * ty) + \
-                (current_direction_for_tz * tz)
-            
-            # Apply this translation offset to the final matrix
-            final_matrix_with_rotation.translation = initial_translation + translation_offset_ACSf_local
-        
-        return final_matrix_with_rotation
-
-##### Old modal stuff
 
     # Modal, Execute, Cancel methods (assumed largely okay from your structure, but check finalize calls)
     def modal(self, context, event):
