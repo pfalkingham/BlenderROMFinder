@@ -7,6 +7,7 @@ import csv
 import os
 import json
 import time
+from decimal import Decimal
 from mathutils import Matrix, Vector # Explicitly import Vector
 from bpy.types import Operator
 from bpy.props import StringProperty
@@ -17,6 +18,29 @@ from .poseCalculations import (
     calculate_pose_for_intuitive_mode,
     calculate_pose_for_mg_hinge_mode
 )
+
+# Helper: build decimal-based range to avoid binary float stepping errors
+def _decimal_range(min_val, max_val, inc_val):
+    start = Decimal(str(min_val))
+    stop = Decimal(str(max_val))
+    step = Decimal(str(inc_val))
+    decimals = []
+    curr = start
+    # Build sequence of Decimal steps up to stop
+    while curr <= stop:
+        decimals.append(curr)
+        curr += step
+    # Ensure exact inclusion of stop value if missed
+    if decimals:
+        if decimals[-1] < stop:
+            decimals.append(stop)
+    else:
+        # No steps generated (range empty), include start (and stop if different)
+        decimals = [start]
+        if stop != start:
+            decimals.append(stop)
+    # Convert to floats
+    return [float(d) for d in decimals]
 
 class COLLISION_OT_cancel(Operator):
     """Cancel the current collision calculation"""
@@ -162,13 +186,13 @@ class COLLISION_OT_calculate(Operator):
 
 
         # Ranges
-        self._rot_x_range = np.arange(props.rot_x_min, props.rot_x_max + props.rot_x_inc, props.rot_x_inc).tolist()
-        # ... (similar for _rot_y_range, _rot_z_range, _trans_x_range, etc.)
-        self._rot_y_range = np.arange(props.rot_y_min, props.rot_y_max + props.rot_y_inc, props.rot_y_inc).tolist()
-        self._rot_z_range = np.arange(props.rot_z_min, props.rot_z_max + props.rot_z_inc, props.rot_z_inc).tolist()
-        self._trans_x_range = np.arange(props.trans_x_min, props.trans_x_max + props.trans_x_inc, props.trans_x_inc).tolist()
-        self._trans_y_range = np.arange(props.trans_y_min, props.trans_y_max + props.trans_y_inc, props.trans_y_inc).tolist()
-        self._trans_z_range = np.arange(props.trans_z_min, props.trans_z_max + props.trans_z_inc, props.trans_z_inc).tolist()
+        # Use Decimal-based stepping for rotations to avoid binary float artifacts
+        self._rot_x_range = _decimal_range(props.rot_x_min, props.rot_x_max, props.rot_x_inc)
+        self._rot_y_range = _decimal_range(props.rot_y_min, props.rot_y_max, props.rot_y_inc)
+        self._rot_z_range = _decimal_range(props.rot_z_min, props.rot_z_max, props.rot_z_inc)
+        self._trans_x_range = _decimal_range(props.trans_x_min, props.trans_x_max, props.trans_x_inc)
+        self._trans_y_range = _decimal_range(props.trans_y_min, props.trans_y_max, props.trans_y_inc)
+        self._trans_z_range = _decimal_range(props.trans_z_min, props.trans_z_max, props.trans_z_inc)
 
         if not self._rot_x_range: self._rot_x_range = [props.rot_x_min]
         # ... (ensure all ranges have at least one value) ...
@@ -352,7 +376,12 @@ class COLLISION_OT_calculate(Operator):
             if dirpath: os.makedirs(dirpath, exist_ok=True)
             with open(filepath, 'w', newline='') as csvfile:
                 writer = csv.writer(csvfile)
-                writer.writerows(self._csv_data)
+                # Write header row
+                writer.writerow(self._csv_data[0])
+                # Write data rows with consistent 4-decimal formatting to eliminate binary float artifacts
+                for row in self._csv_data[1:]:
+                    formatted_row = [f"{v:.6f}" if isinstance(v, float) else str(v) for v in row]
+                    writer.writerow(formatted_row)
             self.report({'INFO'}, f"Collision data exported to {filepath}")
             if hasattr(self, '_non_collision_frame'):
                  self.report({'INFO'}, f"Inserted {self._non_collision_frame-1} keyframes on collision-free poses")
