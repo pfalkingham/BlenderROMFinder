@@ -9,6 +9,7 @@ import json
 import time
 from mathutils import Matrix, Vector # Explicitly import Vector
 from bpy.types import Operator
+from bpy.props import StringProperty
 from .poseCalculations import (
     get_jcs_rotation_part,
     calculate_jcs_orientation_matrix_local_to_acsf,
@@ -434,4 +435,46 @@ class COLLISION_OT_calculate(Operator):
         else: # If not initialized, just ensure the flag is off
             props.is_calculating = False
         return {'CANCELLED'}
+
+class COLLISION_OT_confirm_calculation(Operator):
+    """Confirm orientation/location before collision calculation"""
+    bl_idname = "collision.confirm_calculate"
+    bl_label = "Calculate Collisions"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    warning_message = StringProperty()
+
+    def invoke(self, context, event):
+        props = context.scene.collision_props
+        acsf = props.ACSf_object
+        acsm = props.ACSm_object
+        warn = False
+        msg_lines = []
+        if acsf and acsm:
+            # Check location difference
+            loc_diff = (acsf.location - acsm.location).length
+            if loc_diff > 1e-3:
+                warn = True
+                msg_lines.append("ACSf and ACSm locations differ; rotation axes may be incorrect.")
+            # Check orientation difference
+            q1 = acsf.matrix_world.to_quaternion()
+            q2 = acsm.matrix_world.to_quaternion()
+            quat_diff = q1.rotation_difference(q2)
+            angle_deg = math.degrees(quat_diff.angle)
+            if angle_deg > 0.1:
+                warn = True
+                msg_lines.append("ACSf and ACSm orientations differ; input rotations are relative.")
+        if warn:
+            self.warning_message = "\n".join(msg_lines)
+            return context.window_manager.invoke_props_dialog(self)
+        return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        for line in self.warning_message.split("\n"):
+            layout.label(text=line)
+
+    def execute(self, context):
+        bpy.ops.collision.calculate('INVOKE_DEFAULT')
+        return {'FINISHED'}
 

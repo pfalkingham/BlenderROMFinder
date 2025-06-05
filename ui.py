@@ -148,4 +148,4 @@ class COLLISION_PT_panel(Panel):
         # Calculate button - place this OUTSIDE any box
         row = layout.row(align=True)
         row.scale_y = 1.5
-        row.operator("collision.calculate", icon='PLAY')
+        row.operator("collision.confirm_calculate", icon='PLAY')
