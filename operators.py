@@ -283,20 +283,25 @@ class COLLISION_OT_calculate(Operator):
                     ACSm_obj.matrix_local = final_ACSm_pose_matrix_local
                 context.view_layer.update()
 
-                collision = self.check_collision(self._prox_obj, self._dist_obj, self._prox_bvh)
+                # --- MODIFIED: Skip collision check if debug_mode and turn_off_collisions are both True ---
+                if props.debug_mode and props.turn_off_collisions:
+                    collision = False
+                else:
+                    collision = self.check_collision(self._prox_obj, self._dist_obj, self._prox_bvh)
                 self._csv_data.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
                 
                 if (not collision and props.visualize_collisions) or (props.debug_mode):
                     target_for_keyframe = ACSm_obj
                     if use_ACSm_bone: target_for_keyframe = ACSm_obj.pose.bones.get(ACSm_bone_name)
                     if target_for_keyframe:
-                        # Set custom properties for input rotations and translations
+                        # Set custom properties for input rotations, translations, and collision
                         target_for_keyframe["input_rot_x"] = rx
                         target_for_keyframe["input_rot_y"] = ry
                         target_for_keyframe["input_rot_z"] = rz
                         target_for_keyframe["input_trans_x"] = tx
                         target_for_keyframe["input_trans_y"] = ty
                         target_for_keyframe["input_trans_z"] = tz
+                        target_for_keyframe["Valid pose"] = 0 if collision else 1
                         # Insert keyframes for these custom properties
                         target_for_keyframe.keyframe_insert(data_path='["input_rot_x"]', frame=self._non_collision_frame)
                         target_for_keyframe.keyframe_insert(data_path='["input_rot_y"]', frame=self._non_collision_frame)
@@ -304,6 +309,7 @@ class COLLISION_OT_calculate(Operator):
                         target_for_keyframe.keyframe_insert(data_path='["input_trans_x"]', frame=self._non_collision_frame)
                         target_for_keyframe.keyframe_insert(data_path='["input_trans_y"]', frame=self._non_collision_frame)
                         target_for_keyframe.keyframe_insert(data_path='["input_trans_z"]', frame=self._non_collision_frame)
+                        target_for_keyframe.keyframe_insert(data_path='["Valid pose"]', frame=self._non_collision_frame)
                         target_for_keyframe.keyframe_insert(data_path="location", frame=self._non_collision_frame)
                         target_for_keyframe.keyframe_insert(data_path="rotation_euler", frame=self._non_collision_frame)
                     self._non_collision_frame += 1

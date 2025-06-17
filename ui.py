@@ -134,6 +134,8 @@ class COLLISION_PT_panel(Panel):
         if props.debug_mode:
             debug_row = box.row()
             debug_row.label(text="Debug: Shows ALL poses (colliding + valid)", icon='INFO')
+            debug_row = box.row()
+            debug_row.prop(props, "turn_off_collisions")
         
         # Performance options - keep this as a SEPARATE box
         box = layout.box()
