@@ -10,6 +10,10 @@ from bpy.props import (
     EnumProperty
 )
 
+def update_debug_mode(self, context):
+    if not self.debug_mode:
+        self.turn_off_collisions = False
+
 class CollisionProperties(PropertyGroup):
     # Object selection
     proximal_object: PointerProperty(
@@ -278,9 +282,14 @@ class CollisionProperties(PropertyGroup):
         description="Create an NLA animation layer with non-colliding poses and make it visible",
         default=True
     )
-    
     debug_mode: BoolProperty(
         name="Debug Mode",
         description="When enabled, visualizes ALL poses (both colliding and non-colliding) with different keyframes for debugging purposes",
+        default=False,
+        update=lambda self, context: update_debug_mode(self, context)
+    )
+    turn_off_collisions: BoolProperty(
+        name="Turn Off Collisions",
+        description="If enabled, disables collision checking (shows all poses regardless of collision status)",
         default=False
     )
