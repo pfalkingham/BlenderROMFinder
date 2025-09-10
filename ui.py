@@ -149,3 +149,15 @@ class COLLISION_PT_panel(Panel):
         row = layout.row(align=True)
         row.scale_y = 1.5
         row.operator("collision.confirm_calculate", icon='PLAY')
+        
+        # High-Performance Optimized calculate button
+        row = layout.row(align=True)
+        row.scale_y = 1.2
+        row.operator("collision.calculate_parallel", icon='MOD_ARRAY', text="High-Performance Optimized (experimental)")
+        
+        # Add info about optimized processing
+        info_box = layout.box()
+        info_box.scale_y = 0.8
+        info_box.label(text="💡 Optimized processing uses efficient batching", icon='INFO')
+        info_box.label(text="    with the same collision logic as original")
+        info_box.label(text="    (should match original performance)")
