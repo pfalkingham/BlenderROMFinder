@@ -267,9 +267,9 @@ class COLLISION_OT_calculate(Operator):
             operational_mode = getattr(props, 'rotation_mode_enum', 'MG_HINGE') # Default to your current default
 
             if operational_mode == 'ISB_STANDARD':
-                final_ACSm_pose_matrix_local = calculate_pose_for_isb_standard_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc)
+                final_ACSm_pose_matrix_local = calculate_pose_for_isb_standard_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc, acsm_obj=ACSm_obj, acsf_obj=props.ACSf_object)
             elif operational_mode == 'INTUITIVE':
-                final_ACSm_pose_matrix_local = calculate_pose_for_intuitive_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc)
+                final_ACSm_pose_matrix_local = calculate_pose_for_intuitive_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc, acsm_obj=ACSm_obj, acsf_obj=props.ACSf_object)
             elif operational_mode == 'MG_HINGE':
                 final_ACSm_pose_matrix_local = calculate_pose_for_mg_hinge_mode(rx, ry, rz, tx, ty, tz, props, acsm_initial_local_matrix_for_calc)
             else:

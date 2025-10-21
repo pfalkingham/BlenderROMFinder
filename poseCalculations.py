@@ -70,32 +70,80 @@ def calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_
     #print(f"[DEBUG] Matrix Z: {current_transform.col[2].to_3d().normalized()}")
     return current_transform
 
-def calculate_pose_for_isb_standard_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
+def _add_world_delta_to_local(base_pose_local_matrix, world_delta, acsm_obj):
+    """Convert a world-space delta vector into the local translation to add to base_pose_local_matrix.
+
+    This ensures the final world movement equals world_delta regardless of parent scaling. If acsm_obj
+    or its parent is unavailable, fallback to simple local addition.
+    """
+    final = base_pose_local_matrix.copy()
+    try:
+        if acsm_obj is None:
+            # No object provided: behave like previous implementation (local translation)
+            final.translation = base_pose_local_matrix.to_translation() + world_delta
+            return final
+
+        parent = acsm_obj.parent
+        if parent:
+            parent_inv = parent.matrix_world.inverted()
+        else:
+            parent_inv = Matrix.Identity(4)
+
+        # Convert world delta into parent-local space (3x3 part)
+        delta_local = parent_inv.to_3x3() @ world_delta
+        final.translation = base_pose_local_matrix.to_translation() + delta_local
+        return final
+    except Exception:
+        # On any failure, fall back to naive behaviour
+        final.translation = base_pose_local_matrix.to_translation() + world_delta
+        return final
+
+
+def calculate_pose_for_isb_standard_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix, acsm_obj=None, acsf_obj=None):
     jcs_orientation_matrix = calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=True)
-    
+
     # Apply JCS rotations relative to the initial pose of ACSm
     base_pose_with_jcs = acsm_initial_local_matrix @ jcs_orientation_matrix
 
     if tx != 0 or ty != 0 or tz != 0:
-        translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
-        translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
-        # Apply translation offset in the new local frame of ACSm
-        final_matrix = base_pose_with_jcs @ translation_matrix_offset
+        # We want a world-space displacement of tx/ty/tz along the rotated local axes.
+        # Compute ACSm world matrix (requires parent world if parent exists)
+        if acsm_obj is not None:
+            parent_world = acsm_obj.parent.matrix_world if acsm_obj.parent else Matrix.Identity(4)
+            acsm_world = parent_world @ base_pose_with_jcs
+            q = acsm_world.to_quaternion()
+            axis_x_world = q @ Vector((1, 0, 0))
+            axis_y_world = q @ Vector((0, 1, 0))
+            axis_z_world = q @ Vector((0, 0, 1))
+            world_delta = (axis_x_world * tx) + (axis_y_world * ty) + (axis_z_world * tz)
+        else:
+            # No object provided: fall back to previous local-translation behaviour
+            world_delta = base_pose_with_jcs.to_3x3() @ Vector((tx, ty, tz))
+
+        final_matrix = _add_world_delta_to_local(base_pose_with_jcs, world_delta, acsm_obj)
     else:
         final_matrix = base_pose_with_jcs
     return final_matrix
 
-def calculate_pose_for_intuitive_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix):
+def calculate_pose_for_intuitive_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz, props, acsm_initial_local_matrix, acsm_obj=None, acsf_obj=None):
     jcs_orientation_matrix = calculate_jcs_orientation_matrix_local_to_acsf(rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=False)
 
     # Apply JCS rotations relative to the initial pose of ACSm
     base_pose_with_jcs = acsm_initial_local_matrix @ jcs_orientation_matrix
 
     if tx != 0 or ty != 0 or tz != 0:
-        translation_vec_local_to_rotated_acsm = Vector((tx, ty, tz))
-        translation_matrix_offset = Matrix.Translation(translation_vec_local_to_rotated_acsm)
-        # Apply translation offset in the new local frame of ACSm
-        final_matrix = base_pose_with_jcs @ translation_matrix_offset
+        if acsm_obj is not None:
+            parent_world = acsm_obj.parent.matrix_world if acsm_obj.parent else Matrix.Identity(4)
+            acsm_world = parent_world @ base_pose_with_jcs
+            q = acsm_world.to_quaternion()
+            axis_x_world = q @ Vector((1, 0, 0))
+            axis_y_world = q @ Vector((0, 1, 0))
+            axis_z_world = q @ Vector((0, 0, 1))
+            world_delta = (axis_x_world * tx) + (axis_y_world * ty) + (axis_z_world * tz)
+        else:
+            world_delta = base_pose_with_jcs.to_3x3() @ Vector((tx, ty, tz))
+
+        final_matrix = _add_world_delta_to_local(base_pose_with_jcs, world_delta, acsm_obj)
     else:
         final_matrix = base_pose_with_jcs
     return final_matrix
@@ -107,10 +155,8 @@ def calculate_pose_for_mg_hinge_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz, props, 
     base_pose_with_jcs = acsm_initial_local_matrix @ jcs_orientation_matrix
 
     if tx != 0 or ty != 0 or tz != 0:
-        # MG_HINGE mode has a special translation logic.
-        # The rotation is from base_pose_with_jcs.
-        # The translation starts from acsm_initial_local_matrix.to_translation()
-        # and adds an offset calculated based on FE angle in ACSf frame.
+        # MG_HINGE mode: translation directions are defined in ACSf frame and influenced by FE.
+        # We'll compute the desired world-space delta and then convert it into parent-local translation
         final_matrix = base_pose_with_jcs.copy() # This has the correct rotation and initial translation part
 
         initial_prism_axis_for_tx = Vector((1,0,0))
@@ -126,14 +172,31 @@ def calculate_pose_for_mg_hinge_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz, props, 
         dir_ty_in_acsf = (fe_only_rot_matrix_in_acsf @ initial_prism_axis_for_ty.to_4d()).to_3d()
         dir_tz_in_acsf = (fe_only_rot_matrix_in_acsf @ initial_prism_axis_for_tz.to_4d()).to_3d()
 
-        # Calculate the total translation offset in the ACSf frame
+        # translation_offset_in_acsf is in ACSf-local coordinates
         translation_offset_in_acsf = (
             (dir_tx_in_acsf * tx) +
             (dir_ty_in_acsf * ty) +
             (dir_tz_in_acsf * tz)
         )
-        # Add this offset to the original translation from acsm_initial_local_matrix
-        final_matrix.translation = acsm_initial_local_matrix.to_translation() + translation_offset_in_acsf
+
+        # If caller provided props we can attempt to get ACSf/ACSm objects to convert frames correctly.
+        # Fallback: if no objects provided, behave as previous implementation (which may be scaled by parents).
+        acsf_obj = None
+        acsm_obj = None
+        if props is not None:
+            acsf_obj = getattr(props, 'ACSf_object', None)
+            acsm_obj = getattr(props, 'ACSm_object', None)
+
+        if acsf_obj is not None:
+            # Map translation offset (in acsf frame) into world-space direction using ACSf world rotation (ignore scale)
+            acsf_world = acsf_obj.matrix_world
+            q_acsf = acsf_world.to_quaternion()
+            world_delta = (q_acsf @ translation_offset_in_acsf)
+            # Convert world delta into parent-local and add
+            final_matrix = _add_world_delta_to_local(base_pose_with_jcs, world_delta, acsm_obj)
+        else:
+            # Fallback: add acsf-local offset directly (legacy behaviour)
+            final_matrix.translation = acsm_initial_local_matrix.to_translation() + translation_offset_in_acsf
     else:
         final_matrix = base_pose_with_jcs
     return final_matrix

@@ -69,6 +69,8 @@ class OptimizedROMProcessor:
 
         # Store operational mode
         self.operational_mode = props.rotation_mode_enum
+        # Keep props reference for translation calculations that need ACSf/ACSm objects
+        self.props = props
 
         # Generate pose combinations
         self.pose_combinations = self._generate_pose_combinations(props)
@@ -157,13 +159,13 @@ class OptimizedROMProcessor:
             # Calculate pose matrix (same as original)
             if self.operational_mode == 'ISB_STANDARD':
                 pose_matrix = calculate_pose_for_isb_standard_mode(
-                    rx, ry, rz, tx, ty, tz, None, self.acsm_initial_local)
+                    rx, ry, rz, tx, ty, tz, None, self.acsm_initial_local, acsm_obj=self.acsm_obj)
             elif self.operational_mode == 'INTUITIVE':
                 pose_matrix = calculate_pose_for_intuitive_mode(
-                    rx, ry, rz, tx, ty, tz, None, self.acsm_initial_local)
+                    rx, ry, rz, tx, ty, tz, None, self.acsm_initial_local, acsm_obj=self.acsm_obj)
             elif self.operational_mode == 'MG_HINGE':
                 pose_matrix = calculate_pose_for_mg_hinge_mode(
-                    rx, ry, rz, tx, ty, tz, None, self.acsm_initial_local)
+                    rx, ry, rz, tx, ty, tz, self.props, self.acsm_initial_local)
             else:
                 continue
 
