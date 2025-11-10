@@ -148,7 +148,11 @@ class COLLISION_OT_calculate(Operator):
         # Store initial local matrix of ACSm (object or bone)
         ACSm_obj = props.ACSm_object
         ACSm_bone_name = getattr(props, 'ACSm_bone', None)
-        use_ACSm_bone = ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name
+        # Check if bone name is valid (not 'NONE' placeholder)
+        use_ACSm_bone = (ACSm_obj and 
+                         ACSm_obj.type == 'ARMATURE' and 
+                         ACSm_bone_name and 
+                         ACSm_bone_name != 'NONE')
         if use_ACSm_bone:
             pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
             if pose_bone: self._initial_ACSm_bone_matrix_local = pose_bone.matrix.copy()
@@ -242,7 +246,11 @@ class COLLISION_OT_calculate(Operator):
         # ACSf_obj = props.ACSf_object # Not directly needed here if passed to helpers
         ACSm_obj = props.ACSm_object 
         ACSm_bone_name = getattr(props, 'ACSm_bone', None)
-        use_ACSm_bone = ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name
+        # Check if bone name is valid (not 'NONE' placeholder)
+        use_ACSm_bone = (ACSm_obj and 
+                         ACSm_obj.type == 'ARMATURE' and 
+                         ACSm_bone_name and 
+                         ACSm_bone_name != 'NONE')
         
         if use_ACSm_bone:
             acsm_initial_local_matrix_for_calc = self._initial_ACSm_bone_matrix_local
@@ -357,7 +365,11 @@ class COLLISION_OT_calculate(Operator):
         if hasattr(self, '_transform_target') and self._transform_target and hasattr(self, '_saved_target_matrix_local'):
             ACSm_obj = props.ACSm_object # Ensure we use the prop
             ACSm_bone_name = getattr(props, 'ACSm_bone', None)
-            use_ACSm_bone = ACSm_obj and ACSm_obj.type == 'ARMATURE' and ACSm_bone_name
+            # Check if bone name is valid (not 'NONE' placeholder)
+            use_ACSm_bone = (ACSm_obj and 
+                             ACSm_obj.type == 'ARMATURE' and 
+                             ACSm_bone_name and 
+                             ACSm_bone_name != 'NONE')
             if use_ACSm_bone:
                 pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
                 if pose_bone: pose_bone.matrix = self._initial_ACSm_bone_matrix_local # Reset to true initial

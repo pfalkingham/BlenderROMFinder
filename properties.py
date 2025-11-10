@@ -45,8 +45,11 @@ class CollisionProperties(PropertyGroup):
         # Called when ACSf_object changes, to update the bone list
         if self.ACSf_object and self.ACSf_object.type == 'ARMATURE':
             armature = self.ACSf_object.data
-            return [(bone.name, bone.name, "") for bone in armature.bones]
-        return []
+            bones = [(bone.name, bone.name, "") for bone in armature.bones]
+            if bones:
+                return bones
+        # Always return at least one item to prevent enum errors
+        return [('NONE', 'None', 'No bones available')]
 
     ACSf_bone: EnumProperty(
         name="ACS Fixed Bone",
@@ -58,8 +61,11 @@ class CollisionProperties(PropertyGroup):
         # Called when ACSm_object changes, to update the bone list
         if self.ACSm_object and self.ACSm_object.type == 'ARMATURE':
             armature = self.ACSm_object.data
-            return [(bone.name, bone.name, "") for bone in armature.bones]
-        return []
+            bones = [(bone.name, bone.name, "") for bone in armature.bones]
+            if bones:
+                return bones
+        # Always return at least one item to prevent enum errors
+        return [('NONE', 'None', 'No bones available')]
 
     ACSm_bone: EnumProperty(
         name="ACS Mobile Bone",

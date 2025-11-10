@@ -35,6 +35,12 @@ class OptimizedROMProcessor:
         self.prox_bvh = None
         self.acsm_initial_local = None
         self.operational_mode = None
+        
+        # Keyframe creation state
+        self.keyframe_batch_index = 0
+        self.keyframe_batch_size = 500
+        self.is_creating_keyframes = False
+        self.keyframe_target = None
 
     def initialize(self, props):
         """Initialize using the same approach as the original operators.py"""
@@ -51,7 +57,10 @@ class OptimizedROMProcessor:
 
         # Get ACSm initial matrix (same as original)
         acsm_bone_name = getattr(props, 'ACSm_bone', None)
-        use_acsm_bone = self.acsm_obj.type == 'ARMATURE' and acsm_bone_name
+        # Check if bone name is valid (not 'NONE' placeholder)
+        use_acsm_bone = (self.acsm_obj.type == 'ARMATURE' and 
+                         acsm_bone_name and 
+                         acsm_bone_name != 'NONE')
         
         if use_acsm_bone:
             pose_bone = self.acsm_obj.pose.bones.get(acsm_bone_name)
@@ -149,7 +158,7 @@ class OptimizedROMProcessor:
         batch_end = min(batch_start + batch_size, self.total_poses)
         batch_poses = self.pose_combinations[batch_start:batch_end]
 
-        print(f"⚙️  Processing batch {batch_start:,} to {batch_end:,} ({len(batch_poses):,} poses)")
+        print(f"  Processing batch {batch_start:,} to {batch_end:,} ({len(batch_poses):,} poses)")
         
         valid_in_batch = 0
         for rx, ry, rz, tx, ty, tz in batch_poses:
@@ -205,7 +214,7 @@ class OptimizedROMProcessor:
         if elapsed > 0:
             poses_per_second = self.processed_poses / elapsed
             remaining_time = (self.total_poses - self.processed_poses) / poses_per_second if poses_per_second > 0 else 0
-            print(f"📈 Progress: {progress:.1f}% - {poses_per_second:.0f} poses/sec - Valid: {valid_in_batch} (Total: {len(self.valid_poses)})")
+            print(f" Progress: {progress:.1f}% - {poses_per_second:.0f} poses/sec - Valid: {valid_in_batch} (Total: {len(self.valid_poses)})")
             print(f"⏰ Est. remaining: {remaining_time/60:.1f} minutes")
 
         return self.processed_poses < self.total_poses and not self.is_cancelled
@@ -224,7 +233,7 @@ class OptimizedROMProcessor:
     def start_processing(self):
         """Start the processing timer"""
         self.start_time = time.time()
-        print(f"🚀 Starting optimized processing of {self.total_poses:,} poses")
+        print(f" Starting optimized processing of {self.total_poses:,} poses")
 
     def get_progress(self):
         """Get current progress percentage"""
@@ -270,7 +279,7 @@ class OptimizedROMProcessor:
                     writer = csv.writer(csvfile)
                     writer.writerows(self.csv_data)
                 
-                print(f"📊 Results exported to: {filepath}")
+                print(f" Results exported to: {filepath}")
                 
             except Exception as e:
                 print(f"❌ Error exporting CSV: {e}")
@@ -280,7 +289,7 @@ class OptimizedROMProcessor:
         if props.visualize_collisions and self.valid_poses:
             try:
                 self._create_animation_keyframes(props)
-                print(f"🎬 Created {len(self.valid_poses)} animation keyframes")
+                print(f" Created {len(self.valid_poses)} animation keyframes")
             except Exception as e:
                 print(f"❌ Error creating animation: {e}")
                 success = False
@@ -292,10 +301,18 @@ class OptimizedROMProcessor:
         if not self.valid_poses:
             return
             
-        print(f"🎬 Creating {len(self.valid_poses):,} animation keyframes (optimized)...")
+        print(f" Creating {len(self.valid_poses):,} animation keyframes (optimized)...")
+        
+        # Reset UI for keyframe progress
+        props.calculation_progress = 0.0
+        props.time_remaining = "Creating animation keyframes..."
         
         acsm_bone_name = getattr(props, 'ACSm_bone', None)
-        use_acsm_bone = self.acsm_obj and self.acsm_obj.type == 'ARMATURE' and acsm_bone_name
+        # Check if bone name is valid (not 'NONE' placeholder)
+        use_acsm_bone = (self.acsm_obj and 
+                         self.acsm_obj.type == 'ARMATURE' and 
+                         acsm_bone_name and 
+                         acsm_bone_name != 'NONE')
 
         if use_acsm_bone:
             target = self.acsm_obj.pose.bones.get(acsm_bone_name)
@@ -315,105 +332,196 @@ class OptimizedROMProcessor:
             target.keyframe_insert(data_path="location", frame=0)
             target.keyframe_insert(data_path="rotation_euler", frame=0)
 
-            # OPTIMIZED: Large batches with minimal scene updates
+            # OPTIMIZED: Smaller batches for more frequent UI updates
             total_poses = len(self.valid_poses)
-            batch_size = 1000  # Much larger batches for speed
+            batch_size = 500  # Smaller batches for more frequent progress updates
             
             for batch_start in range(0, total_poses, batch_size):
                 batch_end = min(batch_start + batch_size, total_poses)
                 batch_poses = self.valid_poses[batch_start:batch_end]
                 
-                # Progress feedback
+                # Update UI progress
                 progress = (batch_end / total_poses) * 100
-                print(f"⚡ Keyframe batch: {progress:.1f}% ({batch_end:,}/{total_poses:,})")
+                props.calculation_progress = progress
+                props.time_remaining = f"Creating keyframes: {batch_end:,}/{total_poses:,} ({progress:.1f}%)"
+                
+                # CRITICAL: Force UI redraw to show progress
+                for window in bpy.context.window_manager.windows:
+                    for area in window.screen.areas:
+                        if area.type == 'VIEW_3D':
+                            area.tag_redraw()
+                
+                # Force Blender to process events and update UI
+                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+                
+                # Console feedback with flush
+                print(f"⏳ Keyframe progress: {progress:.1f}% ({batch_end:,}/{total_poses:,})", flush=True)
                 
                 # Process entire batch without scene updates
                 for i, pose_data in enumerate(batch_poses):
                     frame = batch_start + i + 1
                     
-                    # Apply pose matrix
-                    if use_acsm_bone:
-                        target.matrix = pose_data['pose_matrix']
-                    else:
-                        target.matrix_local = pose_data['pose_matrix']
+                    try:
+                        # Apply pose matrix
+                        if use_acsm_bone:
+                            target.matrix = pose_data['pose_matrix']
+                        else:
+                            target.matrix_local = pose_data['pose_matrix']
 
-                    # Set all custom properties
-                    target["input_rot_x"] = pose_data['rx']
-                    target["input_rot_y"] = pose_data['ry']
-                    target["input_rot_z"] = pose_data['rz']
-                    target["input_trans_x"] = pose_data['tx']
-                    target["input_trans_y"] = pose_data['ty']
-                    target["input_trans_z"] = pose_data['tz']
+                        # Set all custom properties
+                        target["input_rot_x"] = pose_data['rx']
+                        target["input_rot_y"] = pose_data['ry']
+                        target["input_rot_z"] = pose_data['rz']
+                        target["input_trans_x"] = pose_data['tx']
+                        target["input_trans_y"] = pose_data['ty']
+                        target["input_trans_z"] = pose_data['tz']
 
-                    # Insert all keyframes
-                    target.keyframe_insert(data_path="location", frame=frame)
-                    target.keyframe_insert(data_path="rotation_euler", frame=frame)
-                    target.keyframe_insert(data_path='["input_rot_x"]', frame=frame)
-                    target.keyframe_insert(data_path='["input_rot_y"]', frame=frame)
-                    target.keyframe_insert(data_path='["input_rot_z"]', frame=frame)
-                    target.keyframe_insert(data_path='["input_trans_x"]', frame=frame)
-                    target.keyframe_insert(data_path='["input_trans_y"]', frame=frame)
-                    target.keyframe_insert(data_path='["input_trans_z"]', frame=frame)
-                
-                # Only update scene once per large batch
-                bpy.context.view_layer.update()
-
-        finally:
-            # Restore original settings
-            scene.tool_settings.use_keyframe_insert_auto = original_use_keyframe_insert_auto
-
-        print(f"✅ Animation keyframes complete: {len(self.valid_poses):,} poses")
-        total_poses = len(self.valid_poses)
-        
-        for batch_start in range(0, total_poses, batch_size):
-            batch_end = min(batch_start + batch_size, total_poses)
-            batch_poses = self.valid_poses[batch_start:batch_end]
-            
-            # Progress feedback for large datasets
-            if total_poses > 1000:
-                progress = ((batch_end) / total_poses) * 100
-                print(f"⏳ Keyframe progress: {progress:.1f}% ({batch_end:,}/{total_poses:,})")
-            
-            # Process batch
-            for i, pose_data in enumerate(batch_poses):
-                frame = batch_start + i + 1
-                try:
-                    # Apply pose matrix
-                    if use_acsm_bone:
-                        target.matrix = pose_data['pose_matrix']
-                    else:
-                        target.matrix_local = pose_data['pose_matrix']
-
-                    # Set custom properties (only essential ones)
-                    target["input_rot_x"] = pose_data['rx']
-                    target["input_rot_y"] = pose_data['ry']
-                    target["input_rot_z"] = pose_data['rz']
-                    target["input_trans_x"] = pose_data['tx']
-                    target["input_trans_y"] = pose_data['ty']
-                    target["input_trans_z"] = pose_data['tz']
-
-                    # Insert keyframes (reduced set for performance)
-                    target.keyframe_insert(data_path="location", frame=frame)
-                    target.keyframe_insert(data_path="rotation_euler", frame=frame)
-                    
-                    # Only insert custom property keyframes for every 10th frame to reduce overhead
-                    if frame % 10 == 1 or total_poses < 1000:
+                        # Insert all keyframes
+                        target.keyframe_insert(data_path="location", frame=frame)
+                        target.keyframe_insert(data_path="rotation_euler", frame=frame)
                         target.keyframe_insert(data_path='["input_rot_x"]', frame=frame)
                         target.keyframe_insert(data_path='["input_rot_y"]', frame=frame)
                         target.keyframe_insert(data_path='["input_rot_z"]', frame=frame)
                         target.keyframe_insert(data_path='["input_trans_x"]', frame=frame)
                         target.keyframe_insert(data_path='["input_trans_y"]', frame=frame)
                         target.keyframe_insert(data_path='["input_trans_z"]', frame=frame)
-
-                except Exception as e:
-                    if batch_start == 0 and i < 10:  # Only log first few errors
-                        print(f"⚠️  Error creating keyframe {frame}: {e}")
-                    continue
-            
-            # Update scene less frequently for better performance
-            if batch_end % (batch_size * 5) == 0 or batch_end == total_poses:
+                    
+                    except Exception as e:
+                        if batch_start == 0 and i < 10:  # Only log first few errors
+                            print(f"⚠️  Error creating keyframe {frame}: {e}")
+                        continue
+                
+                # Only update scene once per batch
                 bpy.context.view_layer.update()
 
+        finally:
+            # Restore original settings
+            scene.tool_settings.use_keyframe_insert_auto = original_use_keyframe_insert_auto
+            # Reset UI
+            props.calculation_progress = 100.0
+
+        print(f"✅ Animation keyframes complete: {len(self.valid_poses):,} poses")
+
+    def start_keyframe_creation(self, props):
+        """Initialize keyframe creation process"""
+        if not self.valid_poses:
+            return False
+            
+        print(f"🎬 Starting keyframe creation for {len(self.valid_poses):,} poses...")
+        
+        # Reset state
+        self.keyframe_batch_index = 0
+        self.is_creating_keyframes = True
+        
+        # Determine target
+        acsm_bone_name = getattr(props, 'ACSm_bone', None)
+        use_acsm_bone = (self.acsm_obj and 
+                         self.acsm_obj.type == 'ARMATURE' and 
+                         acsm_bone_name and 
+                         acsm_bone_name != 'NONE')
+
+        if use_acsm_bone:
+            self.keyframe_target = self.acsm_obj.pose.bones.get(acsm_bone_name)
+        else:
+            self.keyframe_target = self.acsm_obj
+
+        if not self.keyframe_target:
+            print("❌ No valid target for keyframes")
+            return False
+
+        # Disable auto-keyframing
+        scene = bpy.context.scene
+        self.original_use_keyframe_insert_auto = scene.tool_settings.use_keyframe_insert_auto
+        scene.tool_settings.use_keyframe_insert_auto = False
+        
+        # Set initial keyframe at frame 0
+        self.keyframe_target.keyframe_insert(data_path="location", frame=0)
+        self.keyframe_target.keyframe_insert(data_path="rotation_euler", frame=0)
+        
+        # Update UI
+        props.calculation_progress = 0.0
+        props.time_remaining = "Creating animation keyframes..."
+        
+        return True
+
+    def process_keyframe_batch(self, props):
+        """Process one batch of keyframes - returns True if more batches remain"""
+        if not self.is_creating_keyframes or not self.keyframe_target:
+            return False
+            
+        total_poses = len(self.valid_poses)
+        batch_start = self.keyframe_batch_index * self.keyframe_batch_size
+        
+        if batch_start >= total_poses:
+            # All done
+            self.finish_keyframe_creation(props)
+            return False
+            
+        batch_end = min(batch_start + self.keyframe_batch_size, total_poses)
+        batch_poses = self.valid_poses[batch_start:batch_end]
+        
+        # Update UI
+        progress = (batch_end / total_poses) * 100
+        props.calculation_progress = progress
+        props.time_remaining = f"Creating keyframes: {batch_end:,}/{total_poses:,} ({progress:.1f}%)"
+        
+        # Console feedback
+        print(f"Keyframe batch: {progress:.1f}% ({batch_end:,}/{total_poses:,})", flush=True)
+        
+        # Determine if using bone
+        use_acsm_bone = hasattr(self.keyframe_target, 'bone')
+        
+        # Process batch
+        for i, pose_data in enumerate(batch_poses):
+            frame = batch_start + i + 1
+            
+            try:
+                # Apply pose matrix
+                if use_acsm_bone:
+                    self.keyframe_target.matrix = pose_data['pose_matrix']
+                else:
+                    self.keyframe_target.matrix_local = pose_data['pose_matrix']
+
+                # Set all custom properties
+                self.keyframe_target["input_rot_x"] = pose_data['rx']
+                self.keyframe_target["input_rot_y"] = pose_data['ry']
+                self.keyframe_target["input_rot_z"] = pose_data['rz']
+                self.keyframe_target["input_trans_x"] = pose_data['tx']
+                self.keyframe_target["input_trans_y"] = pose_data['ty']
+                self.keyframe_target["input_trans_z"] = pose_data['tz']
+
+                # Insert all keyframes
+                self.keyframe_target.keyframe_insert(data_path="location", frame=frame)
+                self.keyframe_target.keyframe_insert(data_path="rotation_euler", frame=frame)
+                self.keyframe_target.keyframe_insert(data_path='["input_rot_x"]', frame=frame)
+                self.keyframe_target.keyframe_insert(data_path='["input_rot_y"]', frame=frame)
+                self.keyframe_target.keyframe_insert(data_path='["input_rot_z"]', frame=frame)
+                self.keyframe_target.keyframe_insert(data_path='["input_trans_x"]', frame=frame)
+                self.keyframe_target.keyframe_insert(data_path='["input_trans_y"]', frame=frame)
+                self.keyframe_target.keyframe_insert(data_path='["input_trans_z"]', frame=frame)
+            
+            except Exception as e:
+                if self.keyframe_batch_index == 0 and i < 10:
+                    print(f"⚠️  Error creating keyframe {frame}: {e}")
+                continue
+        
+        # Update scene once per batch
+        bpy.context.view_layer.update()
+        
+        # Move to next batch
+        self.keyframe_batch_index += 1
+        
+        return True  # More batches remain
+
+    def finish_keyframe_creation(self, props):
+        """Clean up after keyframe creation"""
+        if hasattr(self, 'original_use_keyframe_insert_auto'):
+            scene = bpy.context.scene
+            scene.tool_settings.use_keyframe_insert_auto = self.original_use_keyframe_insert_auto
+        
+        self.is_creating_keyframes = False
+        props.calculation_progress = 100.0
+        
         print(f"✅ Animation keyframes complete: {len(self.valid_poses):,} poses")
 
     def export_results(self, props):
@@ -441,14 +549,8 @@ class OptimizedROMProcessor:
                 print(f"❌ Error exporting CSV: {e}")
                 success = False
 
-        # Create animation keyframes if requested
-        if props.visualize_collisions and self.valid_poses:
-            try:
-                self._create_animation_keyframes(props)
-                print(f"🎬 Created {len(self.valid_poses)} animation keyframes")
-            except Exception as e:
-                print(f"❌ Error creating animation: {e}")
-                success = False
+        # NOTE: Keyframe creation is now handled in modal loop for better UI responsiveness
+        # The modal operator will call start_keyframe_creation() after export
 
         return success
 
@@ -456,7 +558,11 @@ class OptimizedROMProcessor:
         """Create animation keyframes for valid poses"""
         acsm_obj = props.ACSm_object
         acsm_bone_name = getattr(props, 'ACSm_bone', None)
-        use_acsm_bone = acsm_obj and acsm_obj.type == 'ARMATURE' and acsm_bone_name
+        # Check if bone name is valid (not 'NONE' placeholder)
+        use_acsm_bone = (acsm_obj and 
+                         acsm_obj.type == 'ARMATURE' and 
+                         acsm_bone_name and 
+                         acsm_bone_name != 'NONE')
 
         if use_acsm_bone:
             target = acsm_obj.pose.bones.get(acsm_bone_name)
@@ -522,7 +628,19 @@ class COLLISION_OT_calculate_parallel(Operator):
 
         if event.type == 'TIMER':
             if self._processor:
-                # Process a batch
+                # Check if we're creating keyframes
+                if self._processor.is_creating_keyframes:
+                    # Process keyframe batch
+                    still_creating = self._processor.process_keyframe_batch(props)
+                    
+                    if not still_creating:
+                        # Keyframe creation complete
+                        self.finish_processing(context)
+                        return {'FINISHED'}
+                    
+                    return {'PASS_THROUGH'}
+                
+                # Normal collision detection processing
                 batch_size = max(1, props.batch_size * 10)  # Use larger batches
                 still_processing = self._processor.process_batch(batch_size)
                 
@@ -540,7 +658,7 @@ class COLLISION_OT_calculate_parallel(Operator):
                     props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
 
                 if not still_processing:
-                    # Processing complete
+                    # Collision detection complete - export CSV
                     try:
                         if self._processor.export_results(props):
                             elapsed = time.time() - self._processor.start_time
@@ -548,15 +666,24 @@ class COLLISION_OT_calculate_parallel(Operator):
                             poses_per_second = self._processor.processed_poses / elapsed if elapsed > 0 else 0
                             
                             self.report({'INFO'}, 
-                                f"Optimized processing complete! "
+                                f"Collision detection complete! "
                                 f"Found {len(self._processor.valid_poses):,} valid poses "
                                 f"in {mins:02d}:{secs:02d} "
                                 f"({poses_per_second:.0f} poses/sec)")
                         else:
-                            self.report({'WARNING'}, "Processing complete but export had issues")
+                            self.report({'WARNING'}, "Export had issues")
                     except Exception as e:
                         self.report({'ERROR'}, f"Export failed: {e}")
-
+                    
+                    # Now start keyframe creation if requested
+                    if props.visualize_collisions and self._processor.valid_poses:
+                        if self._processor.start_keyframe_creation(props):
+                            # Continue modal loop for keyframe creation
+                            return {'PASS_THROUGH'}
+                        else:
+                            self.report({'WARNING'}, "Could not start keyframe creation")
+                    
+                    # No keyframes requested or couldn't start - finish now
                     self.finish_processing(context)
                     return {'FINISHED'}
 
