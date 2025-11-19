@@ -160,6 +160,5 @@ class COLLISION_PT_panel(Panel):
         # Add info about optimized processing
         info_box = layout.box()
         info_box.scale_y = 0.8
-        info_box.label(text="💡 Optimized processing uses efficient batching", icon='INFO')
-        info_box.label(text="    with the same collision logic as original")
-        info_box.label(text="    (should match original performance)")
+        info_box.label(text="Optimized processing uses efficient batching", icon='INFO')
+        info_box.label(text="         with the same collision logic as original")
