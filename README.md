@@ -2,9 +2,9 @@
 
 A Blender addon that systematically finds and records all possible 6-DOF (Degrees of Freedom) poses where two selected objects (a "proximal" and a "distal" object) do not collide. It iterates through user-defined ranges of Joint Coordinate System (JCS) rotations and translational offsets, performing collision checks at each step. This tool is particularly valuable for biomechanical studies, virtual paleontology, robotics, and animation.
 
-**Version:** 3.7.1  
+**Version:** 3.7.4  
 **Blender Version:** 4.4.0 or higher  
-**Authors:** Peter Falkingham, Andréas Jannel, Ben Griffin (Liverpool John Moores University)  
+**Authors:** Peter Falkingham, Andréas Jannel, Ben Griffin, Rebecca Lowes (Liverpool John Moores University)  
 **Video Tutorial:** [Watch on YouTube](https://youtu.be/sQL41YbC_TY) *(Note: Video may not reflect the latest features)*
 
 ## Key Features
@@ -197,7 +197,6 @@ The addon is organized into several modules:
 - `parallel_processor_v2.py` - Experimental optimized processor
 - `poseCalculations.py` - JCS pose calculation logic
 - `ui.py` - User interface panel
-- `test_parallel.py` - Testing utilities
 
 ### Known Issues & Future Enhancements
 - Exploring SDF (Signed Distance Fields) for enhanced collision detection

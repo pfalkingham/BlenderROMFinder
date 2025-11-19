@@ -44,7 +44,7 @@ class OptimizedROMProcessor:
 
     def initialize(self, props):
         """Initialize using the same approach as the original operators.py"""
-        print("🚀 Initializing optimized ROM processor...")
+        print(" Initializing optimized ROM processor...")
         
         # Get objects (same as original)
         self.prox_obj = props.proximal_object
@@ -215,7 +215,7 @@ class OptimizedROMProcessor:
             poses_per_second = self.processed_poses / elapsed
             remaining_time = (self.total_poses - self.processed_poses) / poses_per_second if poses_per_second > 0 else 0
             print(f" Progress: {progress:.1f}% - {poses_per_second:.0f} poses/sec - Valid: {valid_in_batch} (Total: {len(self.valid_poses)})")
-            print(f"⏰ Est. remaining: {remaining_time/60:.1f} minutes")
+            print(f" Est. remaining: {remaining_time/60:.1f} minutes")
 
         return self.processed_poses < self.total_poses and not self.is_cancelled
 
@@ -355,7 +355,7 @@ class OptimizedROMProcessor:
                 bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
                 
                 # Console feedback with flush
-                print(f"⏳ Keyframe progress: {progress:.1f}% ({batch_end:,}/{total_poses:,})", flush=True)
+                print(f" Keyframe progress: {progress:.1f}% ({batch_end:,}/{total_poses:,})", flush=True)
                 
                 # Process entire batch without scene updates
                 for i, pose_data in enumerate(batch_poses):
@@ -543,7 +543,7 @@ class OptimizedROMProcessor:
                     writer = csv.writer(csvfile)
                     writer.writerows(self.csv_data)
                 
-                print(f"📊 Results exported to: {filepath}")
+                print(f"Results exported to: {filepath}")
                 
             except Exception as e:
                 print(f"❌ Error exporting CSV: {e}")

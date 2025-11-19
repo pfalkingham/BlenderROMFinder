@@ -231,6 +231,7 @@ class COLLISION_OT_calculate(Operator):
         self._is_initialized = True
         self._start_time = time.time()
         props.calculation_progress = 0.0
+        props.time_remaining = "Calculating..."
         props.is_calculating = True # This is set by execute, but good to ensure
         self.report({'INFO'}, f"Initialization complete. Total iterations: {self._total_iterations}")
         return True
@@ -357,6 +358,15 @@ class COLLISION_OT_calculate(Operator):
                 self._transform_target.matrix_local = self._saved_target_matrix_local
             context.view_layer.update()
 
+        # Update time remaining
+        if self._start_time and self._completed_iterations > 0:
+            elapsed = time.time() - self._start_time
+            poses_per_second = self._completed_iterations / elapsed
+            remaining_poses = self._total_iterations - self._completed_iterations
+            remaining_time = remaining_poses / poses_per_second if poses_per_second > 0 else 0
+            mins, secs = divmod(int(remaining_time), 60)
+            props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
+
         if self._is_finished: self.finalize_calculation(context); return False
         return True
 
@@ -399,6 +409,7 @@ class COLLISION_OT_calculate(Operator):
             self.report({'INFO'}, f"Total time taken: {mins:02d}:{secs:02d}")
         
         props.is_calculating = False
+        props.time_remaining = ""
         # props.calculation_progress = 100.0 if not cancelled and self._completed_iterations >= self._total_iterations else props.calculation_progress
         if not cancelled and hasattr(self, '_completed_iterations') and hasattr(self, '_total_iterations') and self._total_iterations > 0:
             if self._completed_iterations >= self._total_iterations:
