@@ -239,6 +239,36 @@ class CollisionProperties(PropertyGroup):
         description="Enable to use a faster convex hull pre-check. WARNING: May give incorrect non-collision results if one object can be fully contained within the other. Disable for full accuracy in such cases.",
         default=False  # Off by default
     )
+
+    use_aabb_precheck: BoolProperty(
+        name="Use AABB Pre-Check",
+        description="Skip BVH when world-space bounding boxes are separated (fast coarse test)",
+        default=True
+    )
+
+    aabb_margin: FloatProperty(
+        name="AABB Margin",
+        description="Padding added to bounding boxes for the coarse test (scene units)",
+        default=0.001,
+        min=0.0,
+        max=1.0,
+        precision=4
+    )
+
+    use_proxy_collision: BoolProperty(
+        name="Use Proxy Mesh",
+        description="Use a decimated copy of the distal mesh for collision checks (faster BVH rebuilds)",
+        default=False
+    )
+
+    proxy_decimate_ratio: FloatProperty(
+        name="Proxy Ratio",
+        description="Face ratio for the proxy mesh (1.0 keeps full detail)",
+        default=0.25,
+        min=0.05,
+        max=1.0,
+        precision=3
+    )
     
     batch_size: IntProperty(
         name="Batch Size",

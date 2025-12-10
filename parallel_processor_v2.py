@@ -2,6 +2,7 @@ import bpy
 import bmesh
 import mathutils
 import math
+from itertools import islice, product
 import csv
 import os
 import time
@@ -20,13 +21,13 @@ class OptimizedROMProcessor:
     """Optimized ROM processor using the same collision detection as original but with better batching"""
 
     def __init__(self):
-        self.pose_combinations = []
         self.total_poses = 0
         self.processed_poses = 0
         self.valid_poses = []
         self.csv_data = []
         self.is_cancelled = False
         self.start_time = None
+        self.pose_iterator = None
         
         # Use the same collision detection approach as original
         self.prox_obj = None
@@ -35,6 +36,12 @@ class OptimizedROMProcessor:
         self.prox_bvh = None
         self.acsm_initial_local = None
         self.operational_mode = None
+        self._prox_bounds = None
+        self.use_aabb_precheck = True
+        self.aabb_margin = 0.0
+        self.use_proxy_collision = False
+        self.proxy_decimate_ratio = 1.0
+        self.proxy_obj = None
         
         # Keyframe creation state
         self.keyframe_batch_index = 0
@@ -51,6 +58,14 @@ class OptimizedROMProcessor:
         self.dist_obj = props.distal_object
         acsf_obj = props.ACSf_object
         self.acsm_obj = props.ACSm_object
+
+        self.use_aabb_precheck = getattr(props, 'use_aabb_precheck', True)
+        self.aabb_margin = getattr(props, 'aabb_margin', 0.0)
+        self.use_proxy_collision = getattr(props, 'use_proxy_collision', False)
+        self.proxy_decimate_ratio = getattr(props, 'proxy_decimate_ratio', 1.0)
+
+        # Clear any temp objects from prior runs
+        self._cleanup_temp_objects()
 
         if not all([self.prox_obj, self.dist_obj, acsf_obj, self.acsm_obj]):
             raise ValueError("Missing required objects")
@@ -75,15 +90,38 @@ class OptimizedROMProcessor:
         self.prox_bvh = self._create_bvh_tree(self.prox_obj)
         if not self.prox_bvh:
             raise ValueError("Failed to create proximal BVH")
+        self._prox_bounds = self._get_world_bounds(self.prox_obj)
+
+        # Optional proxy mesh for the distal object
+        if self.use_proxy_collision:
+            self.proxy_obj = self._create_proxy_object(self.dist_obj, self.proxy_decimate_ratio)
+            if self.proxy_obj is None:
+                # Fallback gracefully to full mesh if proxy creation failed or ratio ~1
+                self.use_proxy_collision = False
+
+        # Insert frame 0 keyframe for the pre-move pose (parity with standard operator)
+        target = self._get_keyframe_target(props)
+        if target:
+            self._apply_initial_pose_for_keyframe(target)
+            target.keyframe_insert(data_path="location", frame=0)
+            target.keyframe_insert(data_path="rotation_euler", frame=0)
 
         # Store operational mode
         self.operational_mode = props.rotation_mode_enum
         # Keep props reference for translation calculations that need ACSf/ACSm objects
         self.props = props
 
-        # Generate pose combinations
-        self.pose_combinations = self._generate_pose_combinations(props)
-        self.total_poses = len(self.pose_combinations)
+        # Generate pose ranges and stream combinations to avoid large memory usage
+        self.rot_x_range, self.rot_y_range, self.rot_z_range, self.trans_x_range, self.trans_y_range, self.trans_z_range = self._generate_pose_ranges(props)
+        self.total_poses = (
+            len(self.rot_x_range)
+            * len(self.rot_y_range)
+            * len(self.rot_z_range)
+            * len(self.trans_x_range)
+            * len(self.trans_y_range)
+            * len(self.trans_z_range)
+        )
+        self.pose_iterator = self._iter_pose_combinations()
 
         # Initialize CSV data
         self.csv_data = [["rot_x", "rot_y", "rot_z", "trans_x", "trans_y", "trans_z", "Valid_pose"]]
@@ -107,20 +145,20 @@ class OptimizedROMProcessor:
         obj.to_mesh_clear()
         return bvh
 
-    def _generate_pose_combinations(self, props):
-        """Generate pose combinations (same logic as original)"""
+    def _generate_pose_ranges(self, props):
+        """Generate numeric ranges with de-duplication (shared with original logic)."""
+
         def gen_range(min_val, max_val, inc):
             if inc <= 0:
                 return [round(min_val, 6)]
-            
+
             vals = []
             current = min_val
             eps = inc * 1e-6
             while current <= max_val + eps:
                 vals.append(round(current, 6))
                 current += inc
-            
-            # Remove duplicates
+
             seen = set()
             unique_vals = []
             for v in vals:
@@ -129,7 +167,6 @@ class OptimizedROMProcessor:
                     unique_vals.append(v)
             return unique_vals
 
-        # Generate ranges (same as original)
         rot_x_range = gen_range(props.rot_x_min, props.rot_x_max, props.rot_x_inc)
         rot_y_range = gen_range(props.rot_y_min, props.rot_y_max, props.rot_y_inc)
         rot_z_range = gen_range(props.rot_z_min, props.rot_z_max, props.rot_z_inc)
@@ -137,26 +174,106 @@ class OptimizedROMProcessor:
         trans_y_range = gen_range(props.trans_y_min, props.trans_y_max, props.trans_y_inc)
         trans_z_range = gen_range(props.trans_z_min, props.trans_z_max, props.trans_z_inc)
 
-        # Generate all combinations
-        combinations = []
-        for rx in rot_x_range:
-            for ry in rot_y_range:
-                for rz in rot_z_range:
-                    for tx in trans_x_range:
-                        for ty in trans_y_range:
-                            for tz in trans_z_range:
-                                combinations.append((rx, ry, rz, tx, ty, tz))
+        return rot_x_range, rot_y_range, rot_z_range, trans_x_range, trans_y_range, trans_z_range
 
-        return combinations
+    def _iter_pose_combinations(self):
+        """Stream pose combinations without holding them all in memory."""
+        return product(
+            self.rot_x_range,
+            self.rot_y_range,
+            self.rot_z_range,
+            self.trans_x_range,
+            self.trans_y_range,
+            self.trans_z_range,
+        )
+
+    def _get_world_bounds(self, obj):
+        corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+        min_v = Vector((
+            min(c.x for c in corners),
+            min(c.y for c in corners),
+            min(c.z for c in corners),
+        ))
+        max_v = Vector((
+            max(c.x for c in corners),
+            max(c.y for c in corners),
+            max(c.z for c in corners),
+        ))
+        return min_v, max_v
+
+    def _aabb_overlap(self, min_a, max_a, min_b, max_b, margin=0.0):
+        for i in range(3):
+            if (max_a[i] + margin) < min_b[i] or (max_b[i] + margin) < min_a[i]:
+                return False
+        return True
+
+    def _create_proxy_object(self, source_obj, ratio):
+        # Avoid proxy if ratio keeps full detail
+        if ratio >= 0.999:
+            return None
+
+        try:
+            if bpy.ops.object.mode_set.poll():
+                bpy.ops.object.mode_set(mode='OBJECT')
+
+            bpy.ops.object.select_all(action='DESELECT')
+            source_obj.select_set(True)
+            bpy.context.view_layer.objects.active = source_obj
+            bpy.ops.object.duplicate()
+            proxy_obj = bpy.context.active_object
+            proxy_obj.name = f"{source_obj.name}_romf_proxy"
+
+            decimate_mod = proxy_obj.modifiers.new(name="ROMF_Decimate", type='DECIMATE')
+            decimate_mod.ratio = max(0.05, min(1.0, ratio))
+            bpy.ops.object.modifier_apply(modifier=decimate_mod.name)
+
+            proxy_obj.hide_set(True)
+            proxy_obj.hide_render = True
+            proxy_obj.display_type = 'WIRE'
+            return proxy_obj
+        except Exception as exc:
+            print(f"❌ Proxy creation failed: {exc}")
+            return None
+
+    def _get_keyframe_target(self, props):
+        acsm_bone_name = getattr(props, 'ACSm_bone', None)
+        use_acsm_bone = (
+            self.acsm_obj
+            and self.acsm_obj.type == 'ARMATURE'
+            and acsm_bone_name
+            and acsm_bone_name != 'NONE'
+        )
+        if use_acsm_bone:
+            return self.acsm_obj.pose.bones.get(acsm_bone_name)
+        return self.acsm_obj
+
+    def _apply_initial_pose_for_keyframe(self, target):
+        """Ensure target is at stored initial transform before inserting frame 0 keyframe."""
+        if not self.acsm_initial_local:
+            return
+
+        if hasattr(target, 'bone'):
+            target.matrix = self.acsm_initial_local.copy()
+        else:
+            target.matrix_local = self.acsm_initial_local.copy()
+        bpy.context.view_layer.update()
+
+    def _cleanup_temp_objects(self):
+        if self.proxy_obj and self.proxy_obj.name in bpy.data.objects:
+            bpy.data.objects.remove(self.proxy_obj, do_unlink=True)
+        self.proxy_obj = None
 
     def process_batch(self, batch_size=1000):
         """Process a batch of poses using the same logic as original"""
         if self.is_cancelled or self.processed_poses >= self.total_poses:
             return False
 
+        batch_poses = list(islice(self.pose_iterator, batch_size))
+        if not batch_poses:
+            return False
+
         batch_start = self.processed_poses
-        batch_end = min(batch_start + batch_size, self.total_poses)
-        batch_poses = self.pose_combinations[batch_start:batch_end]
+        batch_end = batch_start + len(batch_poses)
 
         print(f"  Processing batch {batch_start:,} to {batch_end:,} ({len(batch_poses):,} poses)")
         
@@ -221,12 +338,27 @@ class OptimizedROMProcessor:
 
     def _check_collision_original_method(self):
         """Use the EXACT same collision detection as the original operators.py"""
-        # Create BVH for distal object in its current pose
-        dist_bvh = self._create_bvh_tree(self.dist_obj)
-        if not dist_bvh:
+        # Optional debug short-circuit
+        if self.props.debug_mode and self.props.turn_off_collisions:
+            return False
+
+        # Coarse AABB rejection
+        if self.use_aabb_precheck and self._prox_bounds:
+            dist_min, dist_max = self._get_world_bounds(self.dist_obj)
+            if not self._aabb_overlap(self._prox_bounds[0], self._prox_bounds[1], dist_min, dist_max, self.aabb_margin):
+                return False
+
+        collision_obj = self.proxy_obj if self.use_proxy_collision and self.proxy_obj else self.dist_obj
+        transform_matrix = None
+        if collision_obj is self.proxy_obj:
+            # Keep proxy aligned to the current distal transform
+            collision_obj.matrix_world = self.dist_obj.matrix_world.copy()
+            transform_matrix = collision_obj.matrix_world
+
+        dist_bvh = self._create_bvh_tree(collision_obj, transform_matrix)
+        if not dist_bvh or not self.prox_bvh:
             return True  # Assume collision on error
 
-        # Check overlap (same as original)
         overlaps = self.prox_bvh.overlap(dist_bvh)
         return len(overlaps) > 0
 
@@ -285,14 +417,7 @@ class OptimizedROMProcessor:
                 print(f"❌ Error exporting CSV: {e}")
                 success = False
 
-        # Create animation keyframes if requested
-        if props.visualize_collisions and self.valid_poses:
-            try:
-                self._create_animation_keyframes(props)
-                print(f" Created {len(self.valid_poses)} animation keyframes")
-            except Exception as e:
-                print(f"❌ Error creating animation: {e}")
-                success = False
+        # Animation is created in the modal keyframe phase; avoid duplicate creation here
 
         return success
 
@@ -328,6 +453,9 @@ class OptimizedROMProcessor:
         scene.tool_settings.use_keyframe_insert_auto = False
         
         try:
+            # Ensure target is reset to initial pose before inserting frame 0
+            self.reset_acsm_to_initial()
+            self._apply_initial_pose_for_keyframe(target)
             # Set keyframe at frame 0 (initial state)
             target.keyframe_insert(data_path="location", frame=0)
             target.keyframe_insert(data_path="rotation_euler", frame=0)
@@ -434,7 +562,9 @@ class OptimizedROMProcessor:
         self.original_use_keyframe_insert_auto = scene.tool_settings.use_keyframe_insert_auto
         scene.tool_settings.use_keyframe_insert_auto = False
         
-        # Set initial keyframe at frame 0
+        # Reset to initial pose and keyframe at frame 0
+        self.reset_acsm_to_initial()
+        self._apply_initial_pose_for_keyframe(self.keyframe_target)
         self.keyframe_target.keyframe_insert(data_path="location", frame=0)
         self.keyframe_target.keyframe_insert(data_path="rotation_euler", frame=0)
         
@@ -732,6 +862,7 @@ class COLLISION_OT_calculate_parallel(Operator):
         if self._processor:
             self._processor.cancel()
             self._processor.reset_acsm_to_initial()
+            self._processor._cleanup_temp_objects()
         
         if self._timer:
             context.window_manager.event_timer_remove(self._timer)
@@ -746,6 +877,7 @@ class COLLISION_OT_calculate_parallel(Operator):
         
         if self._processor:
             self._processor.reset_acsm_to_initial()
+            self._processor._cleanup_temp_objects()
         
         if self._timer:
             context.window_manager.event_timer_remove(self._timer)

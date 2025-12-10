@@ -146,6 +146,16 @@ class COLLISION_PT_panel(Panel):
         
         # Add checkbox for convex hull optimization
         box.prop(props, "use_convex_hull_optimization")
+
+        # Coarse AABB pre-check
+        box.prop(props, "use_aabb_precheck")
+        if props.use_aabb_precheck:
+            box.prop(props, "aabb_margin")
+
+        # Proxy mesh option
+        box.prop(props, "use_proxy_collision")
+        if props.use_proxy_collision:
+            box.prop(props, "proxy_decimate_ratio")
         
         # Calculate button - place this OUTSIDE any box
         row = layout.row(align=True)
