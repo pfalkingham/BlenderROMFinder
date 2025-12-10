@@ -162,3 +162,17 @@ class COLLISION_PT_panel(Panel):
         info_box.scale_y = 0.8
         info_box.label(text="Optimized processing uses efficient batching", icon='INFO')
         info_box.label(text="         with the same collision logic as original")
+        
+        # Minimum X distance finder
+        box = layout.box()
+        box.label(text="Find Minimum X Distance:", icon='ARROW_LEFTRIGHT')
+        row = box.row(align=True)
+        row.prop(props, "min_x_distance_increment", text="Increment")
+        row = box.row(align=True)
+        row.scale_y = 1.2
+        row.operator("collision.find_min_x_distance", icon='VIEWZOOM')
+        
+        # Show found distance if available
+        if props.min_x_distance_found:
+            result_row = box.row()
+            result_row.label(text=f"Found distance: {props.min_x_distance_result:.6f}", icon='CHECKMARK')

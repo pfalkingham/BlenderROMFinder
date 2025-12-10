@@ -299,3 +299,26 @@ class CollisionProperties(PropertyGroup):
         description="If enabled, disables collision checking (shows all poses regardless of collision status)",
         default=False
     )
+    
+    # Minimum X distance finder
+    min_x_distance_increment: FloatProperty(
+        name="X Distance Increment",
+        description="Increment to move ACSm along its X-axis when finding minimum distance (negative to search opposite direction)",
+        default=0.1,
+        min=-10.0,
+        max=10.0,
+        precision=6
+    )
+    
+    min_x_distance_result: FloatProperty(
+        name="Found Distance",
+        description="The minimum X distance found where no collision occurs",
+        default=0.0,
+        precision=6
+    )
+    
+    min_x_distance_found: BoolProperty(
+        name="Distance Found",
+        description="Whether a minimum X distance has been found",
+        default=False
+    )

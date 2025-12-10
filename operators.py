@@ -525,3 +525,139 @@ class COLLISION_OT_confirm_calculation(Operator):
         bpy.ops.collision.calculate('INVOKE_DEFAULT')
         return {'FINISHED'}
 
+
+class COLLISION_OT_find_min_x_distance(Operator):
+    """Move ACSm along its local X-axis until distal bone no longer collides with proximal bone"""
+    bl_idname = "collision.find_min_x_distance"
+    bl_label = "Find Minimum X Distance"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def create_bvh_tree(self, obj, transform_matrix=None):
+        """Create a BVH tree from object mesh"""
+        bm = bmesh.new()
+        mesh = obj.to_mesh()
+        bm.from_mesh(mesh)
+        if transform_matrix is not None:
+            bm.transform(transform_matrix)
+        else:
+            bm.transform(obj.matrix_world)
+        bvh = mathutils.bvhtree.BVHTree.FromBMesh(bm)
+        bm.free()
+        obj.to_mesh_clear()
+        return bvh
+    
+    def check_collision(self, prox_obj, dist_obj, prox_bvh):
+        """Check if two objects collide using BVH trees"""
+        dist_bvh = self.create_bvh_tree(dist_obj, dist_obj.matrix_world)
+        if not prox_bvh or not dist_bvh:
+            return True  # Assume collision if BVH failed
+        return len(prox_bvh.overlap(dist_bvh)) > 0
+    
+    def execute(self, context):
+        props = context.scene.collision_props
+        
+        # Validate required objects
+        if not props.proximal_object:
+            self.report({'ERROR'}, "Proximal object not set")
+            return {'CANCELLED'}
+        if not props.distal_object:
+            self.report({'ERROR'}, "Distal object not set")
+            return {'CANCELLED'}
+        if not props.ACSm_object:
+            self.report({'ERROR'}, "ACSm object not set")
+            return {'CANCELLED'}
+        
+        prox_obj = props.proximal_object
+        dist_obj = props.distal_object
+        ACSm_obj = props.ACSm_object
+        increment = props.min_x_distance_increment
+        
+        # Check if using bone
+        ACSm_bone_name = getattr(props, 'ACSm_bone', None)
+        use_ACSm_bone = (ACSm_obj and 
+                        ACSm_obj.type == 'ARMATURE' and 
+                        ACSm_bone_name and 
+                        ACSm_bone_name != 'NONE')
+        
+        # Store initial state
+        if use_ACSm_bone:
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+            if not pose_bone:
+                self.report({'ERROR'}, f"ACSm bone '{ACSm_bone_name}' not found")
+                return {'CANCELLED'}
+            initial_matrix = pose_bone.matrix.copy()
+        else:
+            initial_matrix = ACSm_obj.matrix_local.copy()
+        
+        # Create BVH for proximal object (static)
+        prox_bvh = self.create_bvh_tree(prox_obj)
+        if not prox_bvh:
+            self.report({'ERROR'}, "Failed to create BVH for proximal object")
+            return {'CANCELLED'}
+        
+        # Check initial collision state
+        context.view_layer.update()
+        initial_collision = self.check_collision(prox_obj, dist_obj, prox_bvh)
+        
+        if not initial_collision:
+            self.report({'INFO'}, "Objects are not currently colliding. No movement needed.")
+            return {'FINISHED'}
+        
+        # Validate increment is not zero
+        if abs(increment) < 0.0000001:
+            self.report({'ERROR'}, "Increment cannot be zero")
+            return {'CANCELLED'}
+        
+        # Move ACSm along its local X-axis until no collision
+        total_distance = 0.0
+        max_distance = 100.0  # Safety limit
+        iterations = 0
+        max_iterations = int(max_distance / abs(increment)) + 1
+        
+        while iterations < max_iterations:
+            total_distance += increment
+            iterations += 1
+            
+            # Calculate new position by moving along local X-axis
+            if use_ACSm_bone:
+                pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+                # Get the local X axis of the bone in its current orientation
+                local_x_axis = pose_bone.matrix.to_3x3() @ Vector((1, 0, 0))
+                # Create translation matrix
+                translation = Matrix.Translation(local_x_axis.normalized() * total_distance)
+                # Apply translation to initial position
+                new_matrix = translation @ initial_matrix
+                pose_bone.matrix = new_matrix
+            else:
+                # Get the local X axis of ACSm in its current orientation
+                local_x_axis = initial_matrix.to_3x3() @ Vector((1, 0, 0))
+                # Create translation matrix
+                translation = Matrix.Translation(local_x_axis.normalized() * total_distance)
+                # Apply translation to initial position
+                new_matrix = translation @ initial_matrix
+                ACSm_obj.matrix_local = new_matrix
+            
+            context.view_layer.update()
+            
+            # Check collision
+            if not self.check_collision(prox_obj, dist_obj, prox_bvh):
+                # Store the result in properties
+                props.min_x_distance_result = total_distance
+                props.min_x_distance_found = True
+                self.report({'INFO'}, f"No collision at X distance: {total_distance:.6f} (after {iterations} iterations)")
+                return {'FINISHED'}
+        
+        # If we get here, we hit the max distance without finding a non-colliding position
+        # Restore initial position
+        if use_ACSm_bone:
+            pose_bone = ACSm_obj.pose.bones.get(ACSm_bone_name)
+            pose_bone.matrix = initial_matrix
+        else:
+            ACSm_obj.matrix_local = initial_matrix
+        context.view_layer.update()
+        
+        # Clear previous result
+        props.min_x_distance_found = False
+        self.report({'WARNING'}, f"Could not find non-colliding position within {max_distance} units")
+        return {'CANCELLED'}
+
