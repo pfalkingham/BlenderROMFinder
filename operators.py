@@ -61,6 +61,12 @@ class COLLISION_OT_calculate(Operator):
     _prox_hull_obj = None 
     _prox_hull_bvh = None
     
+    # Cached distal mesh/hull data for optimized collision detection
+    _dist_local_verts = None
+    _dist_local_faces = None
+    _dist_hull_local_verts = None
+    _dist_hull_local_faces = None
+    
     _cur_x_idx = 0
     _cur_y_idx = 0
     _cur_z_idx = 0
@@ -84,6 +90,37 @@ class COLLISION_OT_calculate(Operator):
         obj.to_mesh_clear()
         return bvh
 
+    def cache_mesh_data(self, obj):
+        """Cache mesh vertices and faces in local coordinates for fast BVH creation."""
+        mesh = obj.to_mesh()
+        verts = [v.co.copy() for v in mesh.vertices]
+        faces = [tuple(p.vertices) for p in mesh.polygons]
+        obj.to_mesh_clear()
+        return verts, faces
+
+    def compute_convex_hull_data(self, obj):
+        """Compute convex hull vertices and faces for an object in local space."""
+        try:
+            bm = bmesh.new()
+            mesh = obj.to_mesh()
+            bm.from_mesh(mesh)
+            obj.to_mesh_clear()
+            bmesh.ops.convex_hull(bm, input=bm.verts)
+            bm.verts.ensure_lookup_table()
+            bm.faces.ensure_lookup_table()
+            verts = [v.co.copy() for v in bm.verts]
+            faces = [tuple(v.index for v in f.verts) for f in bm.faces]
+            bm.free()
+            return verts, faces
+        except Exception as e:
+            print(f"Convex hull computation failed: {e}")
+            return None, None
+
+    def create_bvh_from_cached(self, local_verts, faces, transform_matrix):
+        """Create BVH tree from cached vertex/face data with a transform applied."""
+        transformed_verts = [transform_matrix @ v for v in local_verts]
+        return mathutils.bvhtree.BVHTree.FromPolygons(transformed_verts, faces)
+
     def create_convex_hull_object(self, obj):
         bpy.ops.object.select_all(action='DESELECT')
         obj.select_set(True)
@@ -103,30 +140,53 @@ class COLLISION_OT_calculate(Operator):
         obj.location = location.copy()
         obj.rotation_euler = rotation.copy()
 
-    def check_collision(self, prox_obj, dist_obj, prox_bvh_original_mesh=None, transform_matrix=None): # Added transform_matrix
+    def check_collision(self, prox_obj, dist_obj, prox_bvh_original_mesh=None, transform_matrix=None):
+        """Optimized collision detection using cached mesh data when available."""
         props = bpy.context.scene.collision_props
+        dist_world_matrix = dist_obj.matrix_world if transform_matrix is None else transform_matrix
+        
+        # Convex hull pre-check (using cached data if available)
         if props.use_convex_hull_optimization:
-            if self._prox_hull_obj is None: self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
-            if self._prox_hull_bvh is None and self._prox_hull_obj: self._prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
+            # Create proximal hull BVH once (still uses object method for backwards compat)
+            if self._prox_hull_obj is None: 
+                self._prox_hull_obj = self.create_convex_hull_object(prox_obj)
+            if self._prox_hull_bvh is None and self._prox_hull_obj: 
+                self._prox_hull_bvh = self.create_bvh_tree(self._prox_hull_obj)
             
             if self._prox_hull_bvh:
-                temp_dist_hull_obj = self.create_convex_hull_object(dist_obj)
-                if temp_dist_hull_obj:
-                    current_dist_hull_bvh = self.create_bvh_tree(temp_dist_hull_obj)
-                    if temp_dist_hull_obj.name in bpy.data.objects: self.remove_temp_object(temp_dist_hull_obj)
-                    if current_dist_hull_bvh and not self._prox_hull_bvh.overlap(current_dist_hull_bvh):
-                        return False 
+                # Use cached distal hull if available, otherwise compute once
+                if self._dist_hull_local_verts is None:
+                    self._dist_hull_local_verts, self._dist_hull_local_faces = self.compute_convex_hull_data(dist_obj)
+                
+                if self._dist_hull_local_verts and self._dist_hull_local_faces:
+                    # Create hull BVH from cached data with current transform
+                    dist_hull_bvh = self.create_bvh_from_cached(
+                        self._dist_hull_local_verts, 
+                        self._dist_hull_local_faces, 
+                        dist_world_matrix
+                    )
+                    if dist_hull_bvh and not self._prox_hull_bvh.overlap(dist_hull_bvh):
+                        return False  # No collision possible
         
-        # If not using hull opt, or if hulls overlapped, or hull creation failed:
-        # transform_matrix for dist_obj is its current matrix_world for this check
-        dist_bvh_original_mesh = self.create_bvh_tree(dist_obj, dist_obj.matrix_world if transform_matrix is None else transform_matrix)
+        # Full mesh collision check - use cached data if available
+        if self._dist_local_verts is None:
+            self._dist_local_verts, self._dist_local_faces = self.cache_mesh_data(dist_obj)
         
-        # prox_bvh_original_mesh is self._prox_bvh (BVH of original prox_obj mesh)
-        if not self._prox_bvh or not dist_bvh_original_mesh:
+        if self._dist_local_verts and self._dist_local_faces:
+            dist_bvh = self.create_bvh_from_cached(
+                self._dist_local_verts, 
+                self._dist_local_faces, 
+                dist_world_matrix
+            )
+        else:
+            # Fallback to original method
+            dist_bvh = self.create_bvh_tree(dist_obj, dist_world_matrix)
+        
+        if not self._prox_bvh or not dist_bvh:
             self.report({'ERROR'}, "BVH for original mesh check failed.")
             return True 
 
-        return len(self._prox_bvh.overlap(dist_bvh_original_mesh)) > 0
+        return len(self._prox_bvh.overlap(dist_bvh)) > 0
 
     # --- Main Execution Flow ---
     def initialize_calculation(self, context):
@@ -216,6 +276,12 @@ class COLLISION_OT_calculate(Operator):
                 if self._prox_hull_obj.name in bpy.data.objects: self.remove_temp_object(self._prox_hull_obj)
             self._prox_hull_obj = None
             self._prox_hull_bvh = None
+        
+        # Reset cached distal mesh data (will be recomputed on first collision check)
+        self._dist_local_verts = None
+        self._dist_local_faces = None
+        self._dist_hull_local_verts = None
+        self._dist_hull_local_faces = None
 
         # Keyframe ACSm at frame 0 (its initial state)
         target_for_keyframe = ACSm_obj

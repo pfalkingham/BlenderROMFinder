@@ -48,6 +48,19 @@ class OptimizedROMProcessor:
         self.keyframe_batch_size = 500
         self.is_creating_keyframes = False
         self.keyframe_target = None
+        
+        # Cached distal mesh data for optimized BVH creation
+        # Instead of regenerating BVH every pose, we cache the local mesh data
+        # and transform it by the computed pose matrix
+        self._dist_local_verts = None  # Vertices in distal object's local space
+        self._dist_local_faces = None  # Face indices
+        self._dist_initial_world = None  # Distal object's initial world matrix
+        
+        # Convex hull optimization
+        self.use_convex_hull = False
+        self._prox_hull_bvh = None
+        self._dist_hull_local_verts = None
+        self._dist_hull_local_faces = None
 
     def initialize(self, props):
         """Initialize using the same approach as the original operators.py"""
@@ -63,6 +76,7 @@ class OptimizedROMProcessor:
         self.aabb_margin = getattr(props, 'aabb_margin', 0.0)
         self.use_proxy_collision = getattr(props, 'use_proxy_collision', False)
         self.proxy_decimate_ratio = getattr(props, 'proxy_decimate_ratio', 1.0)
+        self.use_convex_hull = getattr(props, 'use_convex_hull_optimization', False)
 
         # Clear any temp objects from prior runs
         self._cleanup_temp_objects()
@@ -98,6 +112,16 @@ class OptimizedROMProcessor:
             if self.proxy_obj is None:
                 # Fallback gracefully to full mesh if proxy creation failed or ratio ~1
                 self.use_proxy_collision = False
+
+        # OPTIMIZATION: Cache the distal mesh data once instead of regenerating BVH every pose
+        # We store the mesh in local coordinates and apply the transform at collision time
+        collision_source = self.proxy_obj if self.use_proxy_collision and self.proxy_obj else self.dist_obj
+        self._dist_initial_world = self.dist_obj.matrix_world.copy()
+        self._cache_mesh_data(collision_source)
+        
+        # If using convex hull optimization, create hulls once
+        if self.use_convex_hull:
+            self._setup_convex_hulls(collision_source)
 
         # Insert frame 0 keyframe for the pre-move pose (parity with standard operator)
         target = self._get_keyframe_target(props)
@@ -144,6 +168,100 @@ class OptimizedROMProcessor:
         bm.free()
         obj.to_mesh_clear()
         return bvh
+
+    def _cache_mesh_data(self, obj):
+        """Cache mesh vertices and faces in local coordinates for fast BVH creation.
+        
+        This is the key optimization: instead of calling to_mesh() and creating a 
+        bmesh every single pose, we extract the vertex/face data once and use 
+        BVHTree.FromPolygons() with a transform applied.
+        """
+        mesh = obj.to_mesh()
+        # Store vertices in local space (will be transformed per-pose)
+        self._dist_local_verts = [v.co.copy() for v in mesh.vertices]
+        self._dist_local_faces = [tuple(p.vertices) for p in mesh.polygons]
+        obj.to_mesh_clear()
+        print(f"  Cached distal mesh: {len(self._dist_local_verts)} verts, {len(self._dist_local_faces)} faces")
+
+    def _setup_convex_hulls(self, dist_collision_obj):
+        """Create convex hulls once at initialization for fast pre-check.
+        
+        The proximal hull BVH is static. The distal hull vertices are cached
+        and transformed per-pose, same as the full mesh.
+        """
+        print("  Setting up convex hull optimization...")
+        
+        # Create proximal convex hull BVH (static, done once)
+        prox_hull_verts, prox_hull_faces = self._compute_convex_hull_data(self.prox_obj)
+        if prox_hull_verts and prox_hull_faces:
+            # Transform to world space (proximal is static)
+            world_verts = [self.prox_obj.matrix_world @ v for v in prox_hull_verts]
+            self._prox_hull_bvh = mathutils.bvhtree.BVHTree.FromPolygons(world_verts, prox_hull_faces)
+            print(f"    Proximal hull: {len(prox_hull_verts)} verts, {len(prox_hull_faces)} faces")
+        
+        # Cache distal convex hull in local space (will be transformed per-pose)
+        dist_hull_verts, dist_hull_faces = self._compute_convex_hull_data(dist_collision_obj)
+        if dist_hull_verts and dist_hull_faces:
+            self._dist_hull_local_verts = dist_hull_verts
+            self._dist_hull_local_faces = dist_hull_faces
+            print(f"    Distal hull: {len(dist_hull_verts)} verts, {len(dist_hull_faces)} faces")
+        else:
+            # Fallback: disable convex hull if creation failed
+            self.use_convex_hull = False
+            print("    Convex hull creation failed, falling back to full mesh")
+
+    def _compute_convex_hull_data(self, obj):
+        """Compute convex hull vertices and faces for an object.
+        Returns (vertices, faces) in local space, or (None, None) on failure.
+        """
+        try:
+            bm = bmesh.new()
+            mesh = obj.to_mesh()
+            bm.from_mesh(mesh)
+            obj.to_mesh_clear()
+            
+            # Compute convex hull - returns dict with 'geom', 'geom_interior', etc.
+            result = bmesh.ops.convex_hull(bm, input=bm.verts)
+            
+            # The result contains the hull geometry:
+            # 'geom' - all hull geometry (verts, edges, faces)
+            # 'geom_interior' - interior (non-hull) geometry to delete
+            # We need to delete the interior and keep only the hull
+            
+            # Delete interior geometry (everything not part of the hull)
+            interior_geom = result.get('geom_interior', [])
+            if interior_geom:
+                bmesh.ops.delete(bm, geom=interior_geom, context='VERTS')
+            
+            # Also delete any unused geometry
+            unused_geom = result.get('geom_unused', [])
+            if unused_geom:
+                bmesh.ops.delete(bm, geom=unused_geom, context='VERTS')
+            
+            # Now the bmesh should contain only the hull
+            bm.verts.ensure_lookup_table()
+            bm.faces.ensure_lookup_table()
+            
+            # Get vertices and faces from the hull
+            verts = [v.co.copy() for v in bm.verts]
+            faces = [tuple(v.index for v in f.verts) for f in bm.faces]
+            
+            bm.free()
+            return verts, faces
+        except Exception as e:
+            print(f"    Convex hull computation failed: {e}")
+            return None, None
+
+    def _create_bvh_from_cached(self, local_verts, faces, transform_matrix):
+        """Create BVH tree from cached vertex/face data with a transform applied.
+        
+        This is MUCH faster than creating a bmesh every time because:
+        1. No mesh evaluation (to_mesh) needed
+        2. No bmesh allocation/deallocation
+        3. Just list comprehension + BVHTree.FromPolygons
+        """
+        transformed_verts = [transform_matrix @ v for v in local_verts]
+        return mathutils.bvhtree.BVHTree.FromPolygons(transformed_verts, faces)
 
     def _generate_pose_ranges(self, props):
         """Generate numeric ranges with de-duplication (shared with original logic)."""
@@ -337,25 +455,46 @@ class OptimizedROMProcessor:
         return self.processed_poses < self.total_poses and not self.is_cancelled
 
     def _check_collision_original_method(self):
-        """Use the EXACT same collision detection as the original operators.py"""
+        """Optimized collision detection using cached mesh data.
+        
+        Instead of regenerating BVH from mesh every pose, we use cached vertex/face 
+        data and transform it by the current distal world matrix.
+        """
         # Optional debug short-circuit
         if self.props.debug_mode and self.props.turn_off_collisions:
             return False
 
-        # Coarse AABB rejection
+        # Get current distal transform
+        dist_world_matrix = self.dist_obj.matrix_world
+
+        # Coarse AABB rejection (fast, uses bounding box)
         if self.use_aabb_precheck and self._prox_bounds:
             dist_min, dist_max = self._get_world_bounds(self.dist_obj)
             if not self._aabb_overlap(self._prox_bounds[0], self._prox_bounds[1], dist_min, dist_max, self.aabb_margin):
                 return False
 
-        collision_obj = self.proxy_obj if self.use_proxy_collision and self.proxy_obj else self.dist_obj
-        transform_matrix = None
-        if collision_obj is self.proxy_obj:
-            # Keep proxy aligned to the current distal transform
-            collision_obj.matrix_world = self.dist_obj.matrix_world.copy()
-            transform_matrix = collision_obj.matrix_world
+        # Convex hull pre-check (if enabled) - also uses cached data now!
+        if self.use_convex_hull and self._prox_hull_bvh and self._dist_hull_local_verts:
+            dist_hull_bvh = self._create_bvh_from_cached(
+                self._dist_hull_local_verts, 
+                self._dist_hull_local_faces, 
+                dist_world_matrix
+            )
+            if dist_hull_bvh and not self._prox_hull_bvh.overlap(dist_hull_bvh):
+                return False  # Hulls don't overlap, no collision possible
 
-        dist_bvh = self._create_bvh_tree(collision_obj, transform_matrix)
+        # Full mesh collision check using cached data
+        if self._dist_local_verts and self._dist_local_faces:
+            dist_bvh = self._create_bvh_from_cached(
+                self._dist_local_verts, 
+                self._dist_local_faces, 
+                dist_world_matrix
+            )
+        else:
+            # Fallback to original method if caching failed
+            collision_obj = self.proxy_obj if self.use_proxy_collision and self.proxy_obj else self.dist_obj
+            dist_bvh = self._create_bvh_tree(collision_obj, dist_world_matrix)
+        
         if not dist_bvh or not self.prox_bvh:
             return True  # Assume collision on error
 
@@ -771,7 +910,7 @@ class COLLISION_OT_calculate_parallel(Operator):
                     return {'PASS_THROUGH'}
                 
                 # Normal collision detection processing
-                batch_size = max(1, props.batch_size * 10)  # Use larger batches
+                batch_size = max(1, props.batch_size)  # Use user-specified batch size
                 still_processing = self._processor.process_batch(batch_size)
                 
                 # Update progress
