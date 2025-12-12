@@ -6,6 +6,7 @@ from itertools import islice, product
 import csv
 import os
 import time
+import numpy as np
 from mathutils import Matrix, Vector
 from bpy.types import Operator
 from bpy.props import StringProperty
@@ -61,6 +62,10 @@ class OptimizedROMProcessor:
         self._prox_hull_bvh = None
         self._dist_hull_local_verts = None
         self._dist_hull_local_faces = None
+        
+        # NumPy arrays for fast vertex transformations
+        self._np_verts = None
+        self._np_hull_verts = None
 
     def initialize(self, props):
         """Initialize using the same approach as the original operators.py"""
@@ -180,6 +185,10 @@ class OptimizedROMProcessor:
         # Store vertices in local space (will be transformed per-pose)
         self._dist_local_verts = [v.co.copy() for v in mesh.vertices]
         self._dist_local_faces = [tuple(p.vertices) for p in mesh.polygons]
+        
+        # Create NumPy array for fast matrix multiplication (Nx4 for homogeneous coords)
+        self._np_verts = np.array([[v.co.x, v.co.y, v.co.z, 1.0] for v in mesh.vertices])
+        
         obj.to_mesh_clear()
         print(f"  Cached distal mesh: {len(self._dist_local_verts)} verts, {len(self._dist_local_faces)} faces")
 
@@ -204,6 +213,10 @@ class OptimizedROMProcessor:
         if dist_hull_verts and dist_hull_faces:
             self._dist_hull_local_verts = dist_hull_verts
             self._dist_hull_local_faces = dist_hull_faces
+            
+            # Create NumPy array for fast matrix multiplication
+            self._np_hull_verts = np.array([[v.x, v.y, v.z, 1.0] for v in dist_hull_verts])
+            
             print(f"    Distal hull: {len(dist_hull_verts)} verts, {len(dist_hull_faces)} faces")
         else:
             # Fallback: disable convex hull if creation failed
@@ -252,15 +265,20 @@ class OptimizedROMProcessor:
             print(f"    Convex hull computation failed: {e}")
             return None, None
 
-    def _create_bvh_from_cached(self, local_verts, faces, transform_matrix):
-        """Create BVH tree from cached vertex/face data with a transform applied.
+    def _create_bvh_from_cached(self, np_verts, faces, transform_matrix):
+        """Create BVH tree from cached NumPy vertex array with matrix multiplication.
         
-        This is MUCH faster than creating a bmesh every time because:
-        1. No mesh evaluation (to_mesh) needed
-        2. No bmesh allocation/deallocation
-        3. Just list comprehension + BVHTree.FromPolygons
+        This is MUCH faster than Python loops because:
+        1. NumPy matrix multiplication in C
+        2. No Python list comprehensions
+        3. Vectorized operations
         """
-        transformed_verts = [transform_matrix @ v for v in local_verts]
+        # Convert mathutils matrix to numpy and transpose for multiplication
+        np_matrix = np.array(transform_matrix)
+        # Transform vertices: (matrix @ verts.T).T gives Nx4 -> Nx3 after homogeneous divide
+        transformed_homogeneous = np_matrix @ np_verts.T
+        # Convert back to 3D coordinates (divide by w, but w=1 so just take xyz)
+        transformed_verts = transformed_homogeneous[:3].T.tolist()
         return mathutils.bvhtree.BVHTree.FromPolygons(transformed_verts, faces)
 
     def _generate_pose_ranges(self, props):
@@ -396,6 +414,9 @@ class OptimizedROMProcessor:
         print(f"  Processing batch {batch_start:,} to {batch_end:,} ({len(batch_poses):,} poses)")
         
         valid_in_batch = 0
+        total_pose_time = 0
+        total_update_time = 0
+        total_collision_time = 0
         for rx, ry, rz, tx, ty, tz in batch_poses:
             if self.is_cancelled:
                 break
@@ -414,6 +435,7 @@ class OptimizedROMProcessor:
                 continue
 
             # Apply pose to ACSm (same as original)
+            pose_start = time.time()
             if self.acsm_obj.type == 'ARMATURE':
                 acsm_bone_name = getattr(bpy.context.scene.collision_props, 'ACSm_bone', None)
                 if acsm_bone_name:
@@ -424,10 +446,24 @@ class OptimizedROMProcessor:
                 self.acsm_obj.matrix_local = pose_matrix
 
             # Update scene (same as original)
+            update_start = time.time()
             bpy.context.view_layer.update()
+            update_time = time.time() - update_start
+            
+            pose_time = time.time() - pose_start
+            total_pose_time += pose_time
+            total_update_time += update_time
 
             # Check collision using EXACT same method as original
+            collision_start = time.time()
             collision = self._check_collision_original_method()
+            collision_time = time.time() - collision_start
+            total_collision_time += collision_time
+            
+            # Check collision using EXACT same method as original
+            collision_start = time.time()
+            collision = self._check_collision_original_method()
+            collision_time = time.time() - collision_start
             
             # Add to CSV data
             self.csv_data.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
@@ -451,6 +487,18 @@ class OptimizedROMProcessor:
             remaining_time = (self.total_poses - self.processed_poses) / poses_per_second if poses_per_second > 0 else 0
             print(f" Progress: {progress:.1f}% - {poses_per_second:.0f} poses/sec - Valid: {valid_in_batch} (Total: {len(self.valid_poses)})")
             print(f" Est. remaining: {remaining_time/60:.1f} minutes")
+            
+            # Debug timing (print average times every 5 batches)
+            if hasattr(self, '_batch_count'):
+                self._batch_count += 1
+            else:
+                self._batch_count = 1
+                
+            if self._batch_count % 5 == 0 and len(batch_poses) > 0:
+                avg_pose_time = total_pose_time / len(batch_poses)
+                avg_update_time = total_update_time / len(batch_poses)  
+                avg_collision_time = total_collision_time / len(batch_poses)
+                print(f"  Timing per pose - Pose calc: {avg_pose_time:.4f}s, Scene update: {avg_update_time:.4f}s, Collision: {avg_collision_time:.4f}s")
 
         return self.processed_poses < self.total_poses and not self.is_cancelled
 
@@ -460,6 +508,9 @@ class OptimizedROMProcessor:
         Instead of regenerating BVH from mesh every pose, we use cached vertex/face 
         data and transform it by the current distal world matrix.
         """
+        import time
+        start_time = time.time()
+        
         # Optional debug short-circuit
         if self.props.debug_mode and self.props.turn_off_collisions:
             return False
@@ -471,22 +522,26 @@ class OptimizedROMProcessor:
         if self.use_aabb_precheck and self._prox_bounds:
             dist_min, dist_max = self._get_world_bounds(self.dist_obj)
             if not self._aabb_overlap(self._prox_bounds[0], self._prox_bounds[1], dist_min, dist_max, self.aabb_margin):
+                print(f"    AABB early exit: {time.time() - start_time:.6f}s")
                 return False
 
+        bvh_start = time.time()
+        
         # Convex hull pre-check (if enabled) - also uses cached data now!
         if self.use_convex_hull and self._prox_hull_bvh and self._dist_hull_local_verts:
             dist_hull_bvh = self._create_bvh_from_cached(
-                self._dist_hull_local_verts, 
+                self._np_hull_verts, 
                 self._dist_hull_local_faces, 
                 dist_world_matrix
             )
             if dist_hull_bvh and not self._prox_hull_bvh.overlap(dist_hull_bvh):
+                print(f"    Hull early exit: {time.time() - start_time:.6f}s")
                 return False  # Hulls don't overlap, no collision possible
 
         # Full mesh collision check using cached data
         if self._dist_local_verts and self._dist_local_faces:
             dist_bvh = self._create_bvh_from_cached(
-                self._dist_local_verts, 
+                self._np_verts, 
                 self._dist_local_faces, 
                 dist_world_matrix
             )
@@ -495,10 +550,21 @@ class OptimizedROMProcessor:
             collision_obj = self.proxy_obj if self.use_proxy_collision and self.proxy_obj else self.dist_obj
             dist_bvh = self._create_bvh_tree(collision_obj, dist_world_matrix)
         
+        bvh_time = time.time() - bvh_start
+        overlap_start = time.time()
+        
         if not dist_bvh or not self.prox_bvh:
             return True  # Assume collision on error
 
         overlaps = self.prox_bvh.overlap(dist_bvh)
+        
+        overlap_time = time.time() - overlap_start
+        total_time = time.time() - start_time
+        
+        # Only print timing for slow collisions (>0.01s)
+        if total_time > 0.01:
+            print(f"    Slow collision - BVH: {bvh_time:.4f}s, Overlap: {overlap_time:.4f}s, Total: {total_time:.4f}s")
+        
         return len(overlaps) > 0
 
     def start_processing(self):
