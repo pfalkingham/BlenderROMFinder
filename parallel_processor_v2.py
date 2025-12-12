@@ -45,7 +45,7 @@ class OptimizedROMProcessor:
         
         # Keyframe creation state
         self.keyframe_batch_index = 0
-        self.keyframe_batch_size = 500
+        self.keyframe_batch_size = 1000
         self.is_creating_keyframes = False
         self.keyframe_target = None
         
@@ -560,114 +560,7 @@ class OptimizedROMProcessor:
 
         return success
 
-    def _create_animation_keyframes(self, props):
-        """Create animation keyframes with ULTRA-optimized bulk operations"""
-        if not self.valid_poses:
-            return
-            
-        print(f" Creating {len(self.valid_poses):,} animation keyframes (optimized)...")
-        
-        # Reset UI for keyframe progress
-        props.calculation_progress = 0.0
-        props.time_remaining = "Creating animation keyframes..."
-        
-        acsm_bone_name = getattr(props, 'ACSm_bone', None)
-        # Check if bone name is valid (not 'NONE' placeholder)
-        use_acsm_bone = (self.acsm_obj and 
-                         self.acsm_obj.type == 'ARMATURE' and 
-                         acsm_bone_name and 
-                         acsm_bone_name != 'NONE')
 
-        if use_acsm_bone:
-            target = self.acsm_obj.pose.bones.get(acsm_bone_name)
-        else:
-            target = self.acsm_obj
-
-        if not target:
-            return
-
-        # CRITICAL: Disable auto-keyframing and other heavy operations
-        scene = bpy.context.scene
-        original_use_keyframe_insert_auto = scene.tool_settings.use_keyframe_insert_auto
-        scene.tool_settings.use_keyframe_insert_auto = False
-        
-        try:
-            # Ensure target is reset to initial pose before inserting frame 0
-            self.reset_acsm_to_initial()
-            self._apply_initial_pose_for_keyframe(target)
-            # Set keyframe at frame 0 (initial state)
-            target.keyframe_insert(data_path="location", frame=0)
-            target.keyframe_insert(data_path="rotation_euler", frame=0)
-
-            # OPTIMIZED: Smaller batches for more frequent UI updates
-            total_poses = len(self.valid_poses)
-            batch_size = 500  # Smaller batches for more frequent progress updates
-            
-            for batch_start in range(0, total_poses, batch_size):
-                batch_end = min(batch_start + batch_size, total_poses)
-                batch_poses = self.valid_poses[batch_start:batch_end]
-                
-                # Update UI progress
-                progress = (batch_end / total_poses) * 100
-                props.calculation_progress = progress
-                props.time_remaining = f"Creating keyframes: {batch_end:,}/{total_poses:,} ({progress:.1f}%)"
-                
-                # CRITICAL: Force UI redraw to show progress
-                for window in bpy.context.window_manager.windows:
-                    for area in window.screen.areas:
-                        if area.type == 'VIEW_3D':
-                            area.tag_redraw()
-                
-                # Force Blender to process events and update UI
-                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-                
-                # Console feedback with flush
-                print(f" Keyframe progress: {progress:.1f}% ({batch_end:,}/{total_poses:,})", flush=True)
-                
-                # Process entire batch without scene updates
-                for i, pose_data in enumerate(batch_poses):
-                    frame = batch_start + i + 1
-                    
-                    try:
-                        # Apply pose matrix
-                        if use_acsm_bone:
-                            target.matrix = pose_data['pose_matrix']
-                        else:
-                            target.matrix_local = pose_data['pose_matrix']
-
-                        # Set all custom properties
-                        target["input_rot_x"] = pose_data['rx']
-                        target["input_rot_y"] = pose_data['ry']
-                        target["input_rot_z"] = pose_data['rz']
-                        target["input_trans_x"] = pose_data['tx']
-                        target["input_trans_y"] = pose_data['ty']
-                        target["input_trans_z"] = pose_data['tz']
-
-                        # Insert all keyframes
-                        target.keyframe_insert(data_path="location", frame=frame)
-                        target.keyframe_insert(data_path="rotation_euler", frame=frame)
-                        target.keyframe_insert(data_path='["input_rot_x"]', frame=frame)
-                        target.keyframe_insert(data_path='["input_rot_y"]', frame=frame)
-                        target.keyframe_insert(data_path='["input_rot_z"]', frame=frame)
-                        target.keyframe_insert(data_path='["input_trans_x"]', frame=frame)
-                        target.keyframe_insert(data_path='["input_trans_y"]', frame=frame)
-                        target.keyframe_insert(data_path='["input_trans_z"]', frame=frame)
-                    
-                    except Exception as e:
-                        if batch_start == 0 and i < 10:  # Only log first few errors
-                            print(f"⚠️  Error creating keyframe {frame}: {e}")
-                        continue
-                
-                # Only update scene once per batch
-                bpy.context.view_layer.update()
-
-        finally:
-            # Restore original settings
-            scene.tool_settings.use_keyframe_insert_auto = original_use_keyframe_insert_auto
-            # Reset UI
-            props.calculation_progress = 100.0
-
-        print(f"✅ Animation keyframes complete: {len(self.valid_poses):,} poses")
 
     def start_keyframe_creation(self, props):
         """Initialize keyframe creation process"""
@@ -822,59 +715,6 @@ class OptimizedROMProcessor:
         # The modal operator will call start_keyframe_creation() after export
 
         return success
-
-    def _create_animation_keyframes(self, props):
-        """Create animation keyframes for valid poses"""
-        acsm_obj = props.ACSm_object
-        acsm_bone_name = getattr(props, 'ACSm_bone', None)
-        # Check if bone name is valid (not 'NONE' placeholder)
-        use_acsm_bone = (acsm_obj and 
-                         acsm_obj.type == 'ARMATURE' and 
-                         acsm_bone_name and 
-                         acsm_bone_name != 'NONE')
-
-        if use_acsm_bone:
-            target = acsm_obj.pose.bones.get(acsm_bone_name)
-        else:
-            target = acsm_obj
-
-        if not target:
-            return
-
-        # Set keyframe at frame 0 (initial state)
-        target.keyframe_insert(data_path="location", frame=0)
-        target.keyframe_insert(data_path="rotation_euler", frame=0)
-
-        # Create keyframes for valid poses
-        for frame, pose_data in enumerate(self.valid_poses, start=1):
-            try:
-                # Apply pose matrix
-                if use_acsm_bone:
-                    target.matrix = pose_data['pose_matrix']
-                else:
-                    target.matrix_local = pose_data['pose_matrix']
-
-                # Set custom properties for input parameters
-                target["input_rot_x"] = pose_data['rx']
-                target["input_rot_y"] = pose_data['ry']
-                target["input_rot_z"] = pose_data['rz']
-                target["input_trans_x"] = pose_data['tx']
-                target["input_trans_y"] = pose_data['ty']
-                target["input_trans_z"] = pose_data['tz']
-
-                # Insert keyframes
-                target.keyframe_insert(data_path="location", frame=frame)
-                target.keyframe_insert(data_path="rotation_euler", frame=frame)
-                target.keyframe_insert(data_path='["input_rot_x"]', frame=frame)
-                target.keyframe_insert(data_path='["input_rot_y"]', frame=frame)
-                target.keyframe_insert(data_path='["input_rot_z"]', frame=frame)
-                target.keyframe_insert(data_path='["input_trans_x"]', frame=frame)
-                target.keyframe_insert(data_path='["input_trans_y"]', frame=frame)
-                target.keyframe_insert(data_path='["input_trans_z"]', frame=frame)
-
-            except Exception as e:
-                print(f"⚠️  Error creating keyframe {frame}: {e}")
-                continue
 
 
 class COLLISION_OT_calculate_parallel(Operator):
