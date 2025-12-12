@@ -607,15 +607,34 @@ class OptimizedROMProcessor:
         return True
 
     def process_keyframe_batch(self, props):
-        """Process one batch of keyframes - returns True if more batches remain"""
+        """
+        Process one batch of keyframes.
+        Collects data in memory first, then writes to Blender 5.0 structures at the end.
+        """
         if not self.is_creating_keyframes or not self.keyframe_target:
             return False
             
         total_poses = len(self.valid_poses)
         batch_start = self.keyframe_batch_index * self.keyframe_batch_size
         
+        # --- 1. INITIALIZATION (Run once on first batch) ---
+        if self.keyframe_batch_index == 0:
+            self.collected_data = {
+                "location": {0: [], 1: [], 2: []},
+                "rotation_euler": {0: [], 1: [], 2: []},
+                # If using quaternions, add rotation_quaternion here
+                '["input_rot_x"]': {0: []},
+                '["input_rot_y"]': {0: []},
+                '["input_rot_z"]': {0: []},
+                '["input_trans_x"]': {0: []},
+                '["input_trans_y"]': {0: []},
+                '["input_trans_z"]': {0: []},
+            }
+            self.frames = []
+
+        # --- 2. FINISH CONDITION ---
         if batch_start >= total_poses:
-            # All done
+            self.apply_collected_keyframes_5_0() # <--- New 5.0 Writer
             self.finish_keyframe_creation(props)
             return False
             
@@ -625,61 +644,136 @@ class OptimizedROMProcessor:
         # Update UI
         progress = (batch_end / total_poses) * 100
         props.calculation_progress = progress
-        props.time_remaining = f"Creating keyframes: {batch_end:,}/{total_poses:,} ({progress:.1f}%)"
+        props.time_remaining = f"Calculating data: {batch_end:,}/{total_poses:,} ({progress:.1f}%)"
         
-        # Console feedback
-        print(f"Keyframe batch: {progress:.1f}% ({batch_end:,}/{total_poses:,})", flush=True)
+        # --- 3. FAST BATCH PROCESSING (Pure Math, No Scene Updates) ---
+        # Determine rotation mode once
+        rot_mode = self.keyframe_target.rotation_mode
         
-        # Determine if using bone
-        use_acsm_bone = hasattr(self.keyframe_target, 'bone')
-        
-        # Process batch
         for i, pose_data in enumerate(batch_poses):
             frame = batch_start + i + 1
+            self.frames.append(frame)
             
-            try:
-                # Apply pose matrix
-                if use_acsm_bone:
-                    self.keyframe_target.matrix = pose_data['pose_matrix']
-                else:
-                    self.keyframe_target.matrix_local = pose_data['pose_matrix']
+            # Decompose Matrix
+            matrix = pose_data['pose_matrix']
+            trans = matrix.to_translation()
+            rot = matrix.to_euler(rot_mode) # Force euler based on obj settings
 
-                # Set all custom properties
-                self.keyframe_target["input_rot_x"] = pose_data['rx']
-                self.keyframe_target["input_rot_y"] = pose_data['ry']
-                self.keyframe_target["input_rot_z"] = pose_data['rz']
-                self.keyframe_target["input_trans_x"] = pose_data['tx']
-                self.keyframe_target["input_trans_y"] = pose_data['ty']
-                self.keyframe_target["input_trans_z"] = pose_data['tz']
+            # Store Location
+            self.collected_data["location"][0].append(trans.x)
+            self.collected_data["location"][1].append(trans.y)
+            self.collected_data["location"][2].append(trans.z)
 
-                # Insert all keyframes
-                self.keyframe_target.keyframe_insert(data_path="location", frame=frame)
-                self.keyframe_target.keyframe_insert(data_path="rotation_euler", frame=frame)
-                self.keyframe_target.keyframe_insert(data_path='["input_rot_x"]', frame=frame)
-                self.keyframe_target.keyframe_insert(data_path='["input_rot_y"]', frame=frame)
-                self.keyframe_target.keyframe_insert(data_path='["input_rot_z"]', frame=frame)
-                self.keyframe_target.keyframe_insert(data_path='["input_trans_x"]', frame=frame)
-                self.keyframe_target.keyframe_insert(data_path='["input_trans_y"]', frame=frame)
-                self.keyframe_target.keyframe_insert(data_path='["input_trans_z"]', frame=frame)
+            # Store Rotation
+            self.collected_data["rotation_euler"][0].append(rot.x)
+            self.collected_data["rotation_euler"][1].append(rot.y)
+            self.collected_data["rotation_euler"][2].append(rot.z)
+
+            # Store Custom Props
+            self.collected_data['["input_rot_x"]'][0].append(pose_data['rx'])
+            self.collected_data['["input_rot_y"]'][0].append(pose_data['ry'])
+            self.collected_data['["input_rot_z"]'][0].append(pose_data['rz'])
             
-            except Exception as e:
-                if self.keyframe_batch_index == 0 and i < 10:
-                    print(f"⚠️  Error creating keyframe {frame}: {e}")
-                continue
-        
-        # Update scene once per batch
-        bpy.context.view_layer.update()
-        
-        # Move to next batch
+            self.collected_data['["input_trans_x"]'][0].append(pose_data['tx'])
+            self.collected_data['["input_trans_y"]'][0].append(pose_data['ty'])
+            self.collected_data['["input_trans_z"]'][0].append(pose_data['tz'])
+
         self.keyframe_batch_index += 1
+        return True 
+
+    def apply_collected_keyframes_5_0(self):
+        """
+        Writes data using Blender 5.0 Layered Animation API (Project Baklava).
+        Hierarchy: Action -> Slot -> Layer -> Strip -> ChannelBag -> FCurves
+        """
+        obj = self.keyframe_target
         
-        return True  # More batches remain
+        if not self.frames:
+            return
+
+        # 1. Ensure Animation Data
+        if not obj.animation_data:
+            obj.animation_data_create()
+        
+        # 2. Get or Create Action
+        action = obj.animation_data.action
+        if not action:
+            action = bpy.data.actions.new(name=f"{obj.name}_Action")
+            obj.animation_data.action = action
+        
+        # 3. Get or Create Slot (The "User" ID)
+        if len(action.slots) == 0:
+            # id_type='OBJECT' is required in 5.0
+            slot = action.slots.new(id_type='OBJECT', name=obj.name)
+        else:
+            slot = action.slots[0]
+
+        # 4. Bind Slot to Object (Note: 'action_slot' is the new property name)
+        obj.animation_data.action_slot = slot
+
+        # 5. Get or Create Layer
+        if len(action.layers) == 0:
+            layer = action.layers.new(name="Base Layer")
+        else:
+            layer = action.layers[0]
+
+        # 6. Get or Create Strip
+        if len(layer.strips) == 0:
+            strip = layer.strips.new(type='KEYFRAME', start=0)
+        else:
+            strip = layer.strips[0]
+
+        # 7. Get the ChannelBag
+        # This retrieves the specific bucket of curves for this slot on this strip
+        channel_bag = strip.channelbag(slot, ensure=True)
+        fcurves_collection = channel_bag.fcurves
+
+        # 8. Write Data (foreach_set optimization)
+        frame_count = len(self.frames)
+        
+        for data_path, indices in self.collected_data.items():
+            for array_index, values in indices.items():
+                
+                # Find or New F-Curve in the Channel Bag
+                fcurve = fcurves_collection.find(data_path=data_path, index=array_index)
+                if not fcurve:
+                    fcurve = fcurves_collection.new(data_path=data_path, index=array_index)
+                
+                # --- CRITICAL FIX START ---
+                # Clear existing points so we don't get an array length mismatch
+                fcurve.keyframe_points.clear()
+                # --- CRITICAL FIX END ---
+                
+                # Prepare buffer: [frame, val, frame, val...]
+                kfp_flat = [0.0] * (frame_count * 2)
+                kfp_flat[0::2] = self.frames
+                kfp_flat[1::2] = values 
+                
+                # Write to C memory
+                fcurve.keyframe_points.add(frame_count)
+                fcurve.keyframe_points.foreach_set("co", kfp_flat)
+                
+                fcurve.update() 
+
+        # Cleanup memory
+        self.collected_data = None
+        self.frames = None
+        
+        # Final Update
+        bpy.context.view_layer.update()
+        print("Blender 5.0 Keyframes Applied Successfully.")
 
     def finish_keyframe_creation(self, props):
         """Clean up after keyframe creation"""
         if hasattr(self, 'original_use_keyframe_insert_auto'):
             scene = bpy.context.scene
             scene.tool_settings.use_keyframe_insert_auto = self.original_use_keyframe_insert_auto
+        
+        # Re-keyframe frame 0 with initial pose after batch keyframing (since apply_collected_keyframes_5_0 clears all keyframes)
+        self.reset_acsm_to_initial()
+        self._apply_initial_pose_for_keyframe(self.keyframe_target)
+        self.keyframe_target.keyframe_insert(data_path="location", frame=0)
+        self.keyframe_target.keyframe_insert(data_path="rotation_euler", frame=0)
         
         self.is_creating_keyframes = False
         props.calculation_progress = 100.0
