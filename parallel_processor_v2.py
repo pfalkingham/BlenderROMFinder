@@ -67,6 +67,15 @@ class OptimizedROMProcessor:
         self._np_verts = None
         self._np_hull_verts = None
 
+    def _get_acsm_bone_info(self, props):
+        """Get ACSm bone name and whether to use bone"""
+        acsm_bone_name = getattr(props, 'ACSm_bone', None)
+        use_acsm_bone = (self.acsm_obj and 
+                         self.acsm_obj.type == 'ARMATURE' and 
+                         acsm_bone_name and 
+                         acsm_bone_name != 'NONE')
+        return acsm_bone_name, use_acsm_bone
+
     def initialize(self, props):
         """Initialize using the same approach as the original operators.py"""
         print(" Initializing optimized ROM processor...")
@@ -90,11 +99,7 @@ class OptimizedROMProcessor:
             raise ValueError("Missing required objects")
 
         # Get ACSm initial matrix (same as original)
-        acsm_bone_name = getattr(props, 'ACSm_bone', None)
-        # Check if bone name is valid (not 'NONE' placeholder)
-        use_acsm_bone = (self.acsm_obj.type == 'ARMATURE' and 
-                         acsm_bone_name and 
-                         acsm_bone_name != 'NONE')
+        acsm_bone_name, use_acsm_bone = self._get_acsm_bone_info(props)
         
         if use_acsm_bone:
             pose_bone = self.acsm_obj.pose.bones.get(acsm_bone_name)
@@ -385,14 +390,7 @@ class OptimizedROMProcessor:
 
     def _apply_initial_pose_for_keyframe(self, target):
         """Ensure target is at stored initial transform before inserting frame 0 keyframe."""
-        if not self.acsm_initial_local:
-            return
-
-        if hasattr(target, 'bone'):
-            target.matrix = self.acsm_initial_local.copy()
-        else:
-            target.matrix_local = self.acsm_initial_local.copy()
-        bpy.context.view_layer.update()
+        self.reset_acsm_to_initial(update_scene=False)
 
     def _cleanup_temp_objects(self):
         if self.proxy_obj and self.proxy_obj.name in bpy.data.objects:
@@ -436,12 +434,11 @@ class OptimizedROMProcessor:
 
             # Apply pose to ACSm (same as original)
             pose_start = time.time()
-            if self.acsm_obj.type == 'ARMATURE':
-                acsm_bone_name = getattr(bpy.context.scene.collision_props, 'ACSm_bone', None)
-                if acsm_bone_name:
-                    pose_bone = self.acsm_obj.pose.bones.get(acsm_bone_name)
-                    if pose_bone:
-                        pose_bone.matrix = pose_matrix
+            acsm_bone_name, use_acsm_bone = self._get_acsm_bone_info(bpy.context.scene.collision_props)
+            if use_acsm_bone:
+                pose_bone = self.acsm_obj.pose.bones.get(acsm_bone_name)
+                if pose_bone:
+                    pose_bone.matrix = pose_matrix
             else:
                 self.acsm_obj.matrix_local = pose_matrix
 
@@ -460,11 +457,6 @@ class OptimizedROMProcessor:
             collision_time = time.time() - collision_start
             total_collision_time += collision_time
             
-            # Check collision using EXACT same method as original
-            collision_start = time.time()
-            collision = self._check_collision_original_method()
-            collision_time = time.time() - collision_start
-            
             # Add to CSV data
             self.csv_data.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
             
@@ -480,21 +472,17 @@ class OptimizedROMProcessor:
         self.processed_poses = batch_end
         
         # Progress update
-        progress = (self.processed_poses / self.total_poses) * 100
-        elapsed = time.time() - self.start_time if self.start_time else 0
-        if elapsed > 0:
-            poses_per_second = self.processed_poses / elapsed
-            remaining_time = (self.total_poses - self.processed_poses) / poses_per_second if poses_per_second > 0 else 0
-            print(f" Progress: {progress:.1f}% - {poses_per_second:.0f} poses/sec - Valid: {valid_in_batch} (Total: {len(self.valid_poses)})")
-            print(f" Est. remaining: {remaining_time/60:.1f} minutes")
+        stats = self._calculate_progress_stats()
+        print(f" Progress: {stats['progress']:.1f}% - {stats['poses_per_second']:.0f} poses/sec - Valid: {valid_in_batch} (Total: {len(self.valid_poses)})")
+        print(f" Est. remaining: {stats['remaining']/60:.1f} minutes")
+        
+        # Debug timing (print average times every 5 batches)
+        if hasattr(self, '_batch_count'):
+            self._batch_count += 1
+        else:
+            self._batch_count = 1
             
-            # Debug timing (print average times every 5 batches)
-            if hasattr(self, '_batch_count'):
-                self._batch_count += 1
-            else:
-                self._batch_count = 1
-                
-            if self._batch_count % 5 == 0 and len(batch_poses) > 0:
+        if self._batch_count % 5 == 0 and len(batch_poses) > 0:
                 avg_pose_time = total_pose_time / len(batch_poses)
                 avg_update_time = total_update_time / len(batch_poses)  
                 avg_collision_time = total_collision_time / len(batch_poses)
@@ -583,50 +571,19 @@ class OptimizedROMProcessor:
         self.is_cancelled = True
         print("🛑 Processing cancelled")
 
-    def reset_acsm_to_initial(self):
+    def reset_acsm_to_initial(self, update_scene=True):
         """Reset ACSm to initial state"""
         if self.acsm_obj and self.acsm_initial_local:
-            if self.acsm_obj.type == 'ARMATURE':
-                acsm_bone_name = getattr(bpy.context.scene.collision_props, 'ACSm_bone', None)
-                if acsm_bone_name:
-                    pose_bone = self.acsm_obj.pose.bones.get(acsm_bone_name)
-                    if pose_bone:
-                        pose_bone.matrix = self.acsm_initial_local
+            acsm_bone_name, use_acsm_bone = self._get_acsm_bone_info(bpy.context.scene.collision_props)
+            if use_acsm_bone:
+                pose_bone = self.acsm_obj.pose.bones.get(acsm_bone_name)
+                if pose_bone:
+                    pose_bone.matrix = self.acsm_initial_local
             else:
                 self.acsm_obj.matrix_local = self.acsm_initial_local
             
-            bpy.context.view_layer.update()
-
-    def export_results(self, props):
-        """Export results (same as original)"""
-        if not self.csv_data or len(self.csv_data) <= 1:
-            return False
-
-        success = True
-
-        # Export CSV
-        if props.export_to_csv and props.export_path:
-            try:
-                filepath = bpy.path.abspath(props.export_path)
-                dirpath = os.path.dirname(filepath)
-                if dirpath:
-                    os.makedirs(dirpath, exist_ok=True)
-                
-                with open(filepath, 'w', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerows(self.csv_data)
-                
-                print(f" Results exported to: {filepath}")
-                
-            except Exception as e:
-                print(f"❌ Error exporting CSV: {e}")
-                success = False
-
-        # Animation is created in the modal keyframe phase; avoid duplicate creation here
-
-        return success
-
-
+            if update_scene:
+                bpy.context.view_layer.update()
 
     def start_keyframe_creation(self, props):
         """Initialize keyframe creation process"""
@@ -640,11 +597,7 @@ class OptimizedROMProcessor:
         self.is_creating_keyframes = True
         
         # Determine target
-        acsm_bone_name = getattr(props, 'ACSm_bone', None)
-        use_acsm_bone = (self.acsm_obj and 
-                         self.acsm_obj.type == 'ARMATURE' and 
-                         acsm_bone_name and 
-                         acsm_bone_name != 'NONE')
+        acsm_bone_name, use_acsm_bone = self._get_acsm_bone_info(props)
 
         if use_acsm_bone:
             self.keyframe_target = self.acsm_obj.pose.bones.get(acsm_bone_name)
@@ -876,6 +829,28 @@ class OptimizedROMProcessor:
 
         return success
 
+    def _calculate_progress_stats(self):
+        """Calculate and return progress statistics"""
+        if self.total_poses == 0:
+            return {
+                'progress': 100.0,
+                'elapsed': 0,
+                'remaining': 0,
+                'poses_per_second': 0
+            }
+        
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        progress = (self.processed_poses / self.total_poses) * 100.0
+        poses_per_second = self.processed_poses / elapsed if elapsed > 0 else 0
+        remaining_time = (self.total_poses - self.processed_poses) / poses_per_second if poses_per_second > 0 else 0
+        
+        return {
+            'progress': progress,
+            'elapsed': elapsed,
+            'remaining': remaining_time,
+            'poses_per_second': poses_per_second
+        }
+
 
 class COLLISION_OT_calculate_parallel(Operator):
     """Optimized collision calculation using efficient batching"""
@@ -886,6 +861,20 @@ class COLLISION_OT_calculate_parallel(Operator):
 
     _timer = None
     _processor = None
+
+    def _cleanup_modal_state(self, context):
+        """Clean up modal state for both cancel and finish"""
+        props = context.scene.collision_props
+        
+        if self._processor:
+            self._processor.reset_acsm_to_initial()
+            self._processor._cleanup_temp_objects()
+        
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+        
+        props.is_calculating = False
 
     def modal(self, context, event):
         props = context.scene.collision_props
@@ -996,33 +985,16 @@ class COLLISION_OT_calculate_parallel(Operator):
 
     def cancel_processing(self, context):
         """Cancel the processing"""
-        props = context.scene.collision_props
-        
         if self._processor:
             self._processor.cancel()
-            self._processor.reset_acsm_to_initial()
-            self._processor._cleanup_temp_objects()
         
-        if self._timer:
-            context.window_manager.event_timer_remove(self._timer)
-            self._timer = None
-        
-        props.is_calculating = False
+        self._cleanup_modal_state(context)
         self.report({'INFO'}, "Optimized processing cancelled")
 
     def finish_processing(self, context):
         """Clean up after processing completion"""
+        self._cleanup_modal_state(context)
         props = context.scene.collision_props
-        
-        if self._processor:
-            self._processor.reset_acsm_to_initial()
-            self._processor._cleanup_temp_objects()
-        
-        if self._timer:
-            context.window_manager.event_timer_remove(self._timer)
-            self._timer = None
-        
-        props.is_calculating = False
         props.calculation_progress = 100.0
 
     def cancel(self, context):
