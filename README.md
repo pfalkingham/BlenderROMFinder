@@ -92,8 +92,12 @@ Set ranges and increments for the six degrees of freedom:
 
 Use the Min, Max, and Step fields for each axis to define the search space.
 
+- **Total poses to search:** The panel now shows a live count under the Translation box labeled "Total poses to search: XX". This is computed as the product of the number of steps for each of the six axes (counts use the same inclusive stepping logic as the search) and updates immediately when you change any Min/Max/Step.
+
 ### 4. Configure Output
-- **Export to CSV:** Enable and set file path for data export (uses `//` for paths relative to .blend file)
+- **Export to CSV:** Enable and set file path for data export (uses `//` for paths relative to .blend file). Specify if you want all poses or only valid poses exported.
+- **Only export valid poses:** A checkbox next to `Export to CSV` will restrict the CSV to only include valid (non-colliding) poses when enabled. When disabled, all poses (colliding and valid) are exported.
+- **Partial exports on cancel:** If you cancel a run mid-calculation, the addon will still write any collected CSV rows (partial export) so you don't lose progress.
 - **Show Animation Layer:** Creates keyframes for valid poses (view in NLA Editor)
 - **Debug Mode:** Shows ALL poses including collisions (for troubleshooting)
   - When enabled, also shows option to "Turn Off Collisions" to see all poses without collision checking
@@ -148,6 +152,8 @@ CSV files contain these columns:
 - `trans_x`, `trans_y`, `trans_z`: Input translation distances (Blender units)
 - `Valid_pose`: 1 = no collision, 0 = collision detected
 
+Note: When "Only export valid poses" is enabled, only rows with `Valid_pose == 1` are written to the CSV.
+
 ## Important Notes & Best Practices
 
 ### Setup Recommendations
@@ -193,8 +199,8 @@ This addon implements established biomechanical concepts from these key sources:
 The addon is organized into several modules:
 - `__init__.py` - Registration and addon metadata
 - `properties.py` - Blender property definitions
-- `operators.py` - Main calculation operator (standard mode)
-- `parallel_processor_v2.py` - Experimental optimized processor
+- `operators.py` - real time operator 
+- `parallel_processor_v2.py` - optimized processor (faster, but can lock up Blender UI temporarily)
 - `poseCalculations.py` - JCS pose calculation logic
 - `ui.py` - User interface panel
 
