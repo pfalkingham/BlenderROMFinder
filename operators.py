@@ -363,7 +363,9 @@ class COLLISION_OT_calculate(Operator):
                     collision = False
                 else:
                     collision = self.check_collision(self._prox_obj, self._dist_obj, self._prox_bvh)
-                self._csv_data.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
+                # Respect the user option to only export valid (non-colliding) poses
+                if not getattr(props, 'only_export_valid_poses', False) or (not collision):
+                    self._csv_data.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
                 
                 if (not collision and props.visualize_collisions) or (props.debug_mode):
                     target_for_keyframe = ACSm_obj
@@ -457,17 +459,23 @@ class COLLISION_OT_calculate(Operator):
             if self._prox_hull_obj.name in bpy.data.objects: self.remove_temp_object(self._prox_hull_obj)
         self._prox_hull_obj = None; self._prox_hull_bvh = None
 
-        if not cancelled and hasattr(self, '_csv_data') and props.export_to_csv and props.export_path:
+        # Always attempt to export CSV if requested, even on cancel (report partial)
+        if hasattr(self, '_csv_data') and props.export_to_csv and props.export_path:
             # ... (CSV export logic from your file) ...
             filepath = bpy.path.abspath(props.export_path)
             dirpath = os.path.dirname(filepath)
             if dirpath: os.makedirs(dirpath, exist_ok=True)
-            with open(filepath, 'w', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerows(self._csv_data)
-            self.report({'INFO'}, f"Collision data exported to {filepath}")
-            if hasattr(self, '_non_collision_frame'):
-                 self.report({'INFO'}, f"Inserted {self._non_collision_frame-1} keyframes on collision-free poses")
+            try:
+                with open(filepath, 'w', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerows(self._csv_data)
+                pose_count = max(0, len(self._csv_data) - 1)  # minus header
+                if cancelled:
+                    self.report({'INFO'}, f"Collision data exported (partial, cancelled) to {filepath} ({pose_count} poses)")
+                else:
+                    self.report({'INFO'}, f"Collision data exported to {filepath} ({pose_count} poses)")
+            except Exception as e:
+                self.report({'ERROR'}, f"Failed to export collision data: {e}")
 
         if hasattr(self, '_start_time') and self._start_time : # Check _start_time exists
             elapsed = time.time() - self._start_time

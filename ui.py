@@ -2,6 +2,7 @@ import bpy
 from bpy.types import Panel
 # Import bl_info from __init__.py
 from . import bl_info
+from .parallel_processor_v2 import get_total_pose_count
 
 class COLLISION_PT_panel(Panel):
     """Creates a panel in the 3D View sidebar"""
@@ -113,13 +114,26 @@ class COLLISION_PT_panel(Panel):
         row.prop(props, "trans_z_min", text="")
         row.prop(props, "trans_z_max", text="")
         row.prop(props, "trans_z_inc", text="")
+
+        # Total poses (product of per-axis step counts)
+        box = layout.box()
+        try:
+            total = get_total_pose_count(props)
+        except Exception:
+            total = 0
+        count_row = box.row()
+        count_row.label(text=f"Total poses to search: {total:,}")
         
         # Output settings
         box = layout.box()
         box.label(text="Output:")
         
         # CSV Export options
-        box.prop(props, "export_to_csv")
+        row = box.row(align=True)
+        row.prop(props, "export_to_csv")
+        sub = row.row()
+        sub.enabled = props.export_to_csv
+        sub.prop(props, "only_export_valid_poses", text="Only export valid poses")
         if props.export_to_csv:
             box.prop(props, "export_path")
         

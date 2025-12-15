@@ -14,6 +14,17 @@ def update_debug_mode(self, context):
     if not self.debug_mode:
         self.turn_off_collisions = False
 
+
+def tag_redraw(self, context):
+    """Tag UI areas for redraw when a property changes."""
+    try:
+        for area in context.screen.areas:
+            # Redraw all areas to ensure panel updates; harmless if not VIEW_3D
+            area.tag_redraw()
+    except Exception:
+        # Be forgiving in case context doesn't provide screen/areas
+        pass
+
 class CollisionProperties(PropertyGroup):
     # Object selection
     proximal_object: PointerProperty(
@@ -80,6 +91,8 @@ class CollisionProperties(PropertyGroup):
         default=-30.0,
         min=-360.0,
         max=360.0
+        ,
+        update=tag_redraw
     )
     
     rot_x_max: FloatProperty(
@@ -88,6 +101,8 @@ class CollisionProperties(PropertyGroup):
         default=30.0,
         min=-360.0,
         max=360.0
+        ,
+        update=tag_redraw
     )
     
     rot_x_inc: FloatProperty(
@@ -96,6 +111,8 @@ class CollisionProperties(PropertyGroup):
         default=5.0,
         min=-90.0,
         max=90.0
+        ,
+        update=tag_redraw
     )
     
     rot_y_min: FloatProperty(
@@ -104,6 +121,8 @@ class CollisionProperties(PropertyGroup):
         default=-30.0,
         min=-360.0,
         max=360.0
+        ,
+        update=tag_redraw
     )
     
     rot_y_max: FloatProperty(
@@ -112,6 +131,8 @@ class CollisionProperties(PropertyGroup):
         default=30.0,
         min=-360.0,
         max=360.0
+        ,
+        update=tag_redraw
     )
     
     rot_y_inc: FloatProperty(
@@ -120,6 +141,8 @@ class CollisionProperties(PropertyGroup):
         default=5.0,
         min=-90.0,
         max=90.0
+        ,
+        update=tag_redraw
     )
     
     rot_z_min: FloatProperty(
@@ -128,6 +151,8 @@ class CollisionProperties(PropertyGroup):
         default=-30.0,
         min=-360.0,
         max=360.0
+        ,
+        update=tag_redraw
     )
     
     rot_z_max: FloatProperty(
@@ -136,6 +161,8 @@ class CollisionProperties(PropertyGroup):
         default=30.0,
         min=-360.0,
         max=360.0
+        ,
+        update=tag_redraw
     )
     
     rot_z_inc: FloatProperty(
@@ -144,6 +171,8 @@ class CollisionProperties(PropertyGroup):
         default=5.0,
         min=-90.0,
         max=90.0
+        ,
+        update=tag_redraw
     )
     
 
@@ -165,6 +194,8 @@ class CollisionProperties(PropertyGroup):
         default=0.0,
         min=-100.0,
         max=100.0
+        ,
+        update=tag_redraw
     )
     
     trans_x_max: FloatProperty(
@@ -173,6 +204,8 @@ class CollisionProperties(PropertyGroup):
         default=0.0,
         min=-100.0,
         max=100.0
+        ,
+        update=tag_redraw
     )
     
     trans_x_inc: FloatProperty(
@@ -182,6 +215,8 @@ class CollisionProperties(PropertyGroup):
         min=-10.0,
         max=10.0,
         precision=4
+        ,
+        update=tag_redraw
     )
     
     trans_y_min: FloatProperty(
@@ -190,6 +225,8 @@ class CollisionProperties(PropertyGroup):
         default=0.0,
         min=-100.0,
         max=100.0
+        ,
+        update=tag_redraw
     )
     
     trans_y_max: FloatProperty(
@@ -198,6 +235,8 @@ class CollisionProperties(PropertyGroup):
         default=0.0,
         min=-100.0,
         max=100.0
+        ,
+        update=tag_redraw
     )
     
     trans_y_inc: FloatProperty(
@@ -207,6 +246,8 @@ class CollisionProperties(PropertyGroup):
         min=-10.0,
         max=10.0,
         precision=4
+        ,
+        update=tag_redraw
     )
     
     trans_z_min: FloatProperty(
@@ -215,6 +256,8 @@ class CollisionProperties(PropertyGroup):
         default=0.0,
         min=-100.0,
         max=100.0
+        ,
+        update=tag_redraw
     )
     
     trans_z_max: FloatProperty(
@@ -223,6 +266,8 @@ class CollisionProperties(PropertyGroup):
         default=0.0,
         min=-100.0,
         max=100.0
+        ,
+        update=tag_redraw
     )
     
     trans_z_inc: FloatProperty(
@@ -232,6 +277,8 @@ class CollisionProperties(PropertyGroup):
         min=-10.0,
         max=10.0,
         precision=4
+        ,
+        update=tag_redraw
     )
     
     use_convex_hull_optimization: BoolProperty(
@@ -304,6 +351,13 @@ class CollisionProperties(PropertyGroup):
         name="Export to CSV",
         description="Enable to export collision data to a CSV file",
         default=True
+    )
+
+    only_export_valid_poses: BoolProperty(
+        name="Only export valid poses",
+        description="When enabled, only write valid (non-colliding) poses to the CSV",
+        default=False,
+        update=tag_redraw
     )
     
     export_path: StringProperty(
