@@ -287,19 +287,30 @@ class OptimizedROMProcessor:
         return mathutils.bvhtree.BVHTree.FromPolygons(transformed_verts, faces)
 
     def _generate_pose_ranges(self, props):
-        """Generate numeric ranges with de-duplication (shared with original logic)."""
+        """Generate numeric ranges with de-duplication (shared with original logic).
+           Supports positive or negative increments so ranges can descend (e.g. -0.1 -> -0.5 step -0.1).
+        """
 
         def gen_range(min_val, max_val, inc):
-            if inc <= 0:
+            # If increment is zero, just return the start value
+            if inc == 0:
                 return [round(min_val, 6)]
 
             vals = []
             current = min_val
-            eps = inc * 1e-6
-            while current <= max_val + eps:
-                vals.append(round(current, 6))
-                current += inc
+            eps = abs(inc) * 1e-6
 
+            # Handle positive increments (ascending) and negative increments (descending)
+            if inc > 0:
+                while current <= max_val + eps:
+                    vals.append(round(current, 6))
+                    current += inc
+            else:
+                while current >= max_val - eps:
+                    vals.append(round(current, 6))
+                    current += inc  # inc is negative here
+
+            # Preserve order and remove duplicates
             seen = set()
             unique_vals = []
             for v in vals:
@@ -932,6 +943,16 @@ class COLLISION_OT_calculate_parallel(Operator):
                             self.report({'WARNING'}, "Export had issues")
                     except Exception as e:
                         self.report({'ERROR'}, f"Export failed: {e}")
+
+                    # Also print to the command line so terminal users see the elapsed time
+                    if hasattr(self._processor, 'start_time') and self._processor.start_time:
+                        elapsed = time.time() - self._processor.start_time
+                        mins, secs = divmod(int(elapsed), 60)
+                        poses_per_second = self._processor.processed_poses / elapsed if elapsed > 0 else 0
+                        print(
+                            f"Collision detection complete! Found {len(self._processor.valid_poses):,} valid poses "
+                            f"in {mins:02d}:{secs:02d} ({poses_per_second:.0f} poses/sec)"
+                        )
                     
                     # Now start keyframe creation if requested
                     if props.visualize_collisions and self._processor.valid_poses:
