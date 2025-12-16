@@ -10,12 +10,12 @@ def test_save_prompt(monkeypatch):
 
     called = {'saved': False}
 
-    def fake_save_mainfile(*args, **kwargs):
+    def fake_save_as_mainfile(*args, **kwargs):
         called['saved'] = True
         return {'CANCELLED'}
 
     # Replace the save operator with our fake
-    monkeypatch.setattr(bpy.ops.wm, 'save_mainfile', fake_save_mainfile)
+    monkeypatch.setattr(bpy.ops.wm, 'save_as_mainfile', fake_save_as_mainfile)
 
     # Ensure props state is reset
     props = bpy.context.scene.collision_props

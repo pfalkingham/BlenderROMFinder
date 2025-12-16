@@ -1558,9 +1558,14 @@ class COLLISION_OT_calculate_parallel(Operator):
             # Headless workers require a saved file to load from disk.
             if not blend_path or bpy.data.is_dirty:
                 # Inform the user and invoke Blender's save dialog (INVOKE_DEFAULT opens the file dialog)
-                self.report({'WARNING'}, "Please save the .blend file to run the high-performance mode.")
-                # By returning {'CANCELLED'}, we stop the operator. The user must click "High-Performance" again after saving.
-                # This is standard Blender practice for operators that depend on a saved file.
+                self.report({'INFO'}, "Please save the .blend file to run the high-performance mode.")
+                # Open Blender's Save As dialog so the user can save before re-running high-performance mode.
+                try:
+                    # Use Save As dialog which is more reliable for unsaved files and will prompt for a filename.
+                    bpy.ops.wm.save_as_mainfile('INVOKE_DEFAULT')
+                except Exception:
+                    # In environments where invoking the dialog isn't possible (like tests), fail silently and cancel.
+                    pass
                 props.is_calculating = False
                 return {'CANCELLED'}
 
