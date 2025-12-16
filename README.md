@@ -120,6 +120,43 @@ Choose one of two calculation methods:
 2. Uses efficient batching with the same collision logic as the original
 3. Should provide similar or better performance
 
+##### Headless Worker Mode (no temporary files)
+
+When your `.blend` file is saved, the optimized operator will attempt to spawn multiple headless Blender worker processes which compute pose chunks in parallel and stream results back to the main Blender process. This avoids writing per-chunk temporary CSV files and keeps all merging and keyframe creation in the main Blender instance.
+
+Notes:
+- Save your `.blend` before running the optimized operator — workers require a saved file to load the same scene.
+- Default worker count is CPU count; you can tune **Workers**, **Chunk Size** and **Worker Timeout** in the Performance Options in the UI.
+- If a worker fails or times out the operator will log the error and either fall back to in-process batching **or** abort the run if **Workers-only mode** is enabled (see UI->Performance).
+
+### Debugging Headless Workers 🐛
+
+If you run into problems with workers, these messages are emitted to help diagnose issues:
+
+- **ROMF_PROGRESS {json}** — periodic progress updates from each worker (keep this).
+- **ROMF_RESULT_START / ROMF_RESULT_END** — final JSON payload from a worker containing `csv_rows` and `valids` (keep this).
+- **ROMF_ERROR {json}** — structured error payload (always keep).
+- **ROMF_DEBUG ARGV [...]** — the full argv the worker received (verbose; useful for debugging argument/quoting problems).
+- **ROMF_DEBUG Worker N starting: range S-E** — worker startup banner (verbose).
+- Parent log: **Starting worker N: <full command>** — printed by the addon so you can reproduce the worker command in a terminal.
+
+Quick troubleshooting steps:
+1. Enable **Workers-only mode** (Performance box) to prevent automatic fallback; this keeps the main process quiet and surfaces worker errors more clearly.
+2. Re-run with a very small pose-space (e.g., 10–50 poses) and 2 workers to reproduce issues faster.
+3. If a worker exits, copy the three lines:
+   - `Starting worker N: <full command>` (printed by the addon)
+   - `ROMF_DEBUG ARGV [...]` (worker's argv)
+   - the worker's output (usage/error/traceback lines)
+   and paste them into an issue or here for faster diagnosis.
+4. You can also run the exact `Starting worker` command in a terminal to reproduce the error and get a full trace.
+
+Reducing debug noise
+
+- The important protocol messages to keep are **ROMF_PROGRESS**, **ROMF_RESULT_START/END**, and **ROMF_ERROR**. The other `ROMF_DEBUG` and parent command lines are verbose and intended for debugging — if you'd like I can add a **Verbose** toggle to the UI to hide these once you're past debugging.
+
+---
+
+
 Check results in the CSV file and/or NLA Editor when complete.
 
 ## Technical Details

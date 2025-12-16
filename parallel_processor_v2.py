@@ -11,6 +11,15 @@ from mathutils import Matrix, Vector
 from bpy.types import Operator
 from bpy.props import StringProperty
 
+# Additional modules for headless-worker support
+import threading
+import queue
+import subprocess
+import json
+import sys
+import traceback
+from pathlib import Path
+
 # Import existing calculation functions
 from .poseCalculations import (
     calculate_pose_for_isb_standard_mode,
@@ -446,6 +455,16 @@ class OptimizedROMProcessor:
         if self.is_cancelled or self.processed_poses >= self.total_poses:
             return False
 
+        # If some poses were already processed by headless workers and merged, skip them here
+        skip = getattr(self, '_skip_remaining', 0)
+        if skip > 0:
+            to_skip = min(skip, batch_size)
+            _ = list(islice(self.pose_iterator, to_skip))
+            self._skip_remaining -= to_skip
+            # If skipping consumed the whole batch, return early to avoid doing work this tick
+            if self._skip_remaining >= 0 and to_skip == batch_size:
+                return True
+
         batch_poses = list(islice(self.pose_iterator, batch_size))
         if not batch_poses:
             return False
@@ -610,6 +629,117 @@ class OptimizedROMProcessor:
         if self.total_poses == 0:
             return 100.0
         return (self.processed_poses / self.total_poses) * 100.0
+
+    def _matrix_to_list(self, mat):
+        """Flatten a 4x4 mathutils.Matrix to 16 floats (row-major)."""
+        return [float(v) for row in mat for v in row]
+
+    def _list_to_matrix(self, lst):
+        """Convert a 16-float list back into a mathutils.Matrix (4x4)."""
+        if not lst or len(lst) != 16:
+            return None
+        return Matrix([[lst[i*4 + j] for j in range(4)] for i in range(4)])
+
+    def process_pose_range(self, start_index, end_index):
+        """Process poses in the closed interval [start_index, end_index] and return data.
+
+        Returns:
+            {"csv_rows": [[rx,ry,rz,tx,ty,tz,valid], ...],
+             "valids": [{"pose_index": idx, "pose_params": [...], "pose_matrix": [16 floats], "rx":..., ...}, ...]}
+        This function does NOT mutate class-level csv_data/valid_poses (safe to call in worker processes).
+        """
+        results_csv = []
+        results_valids = []
+
+        # Create a fresh iterator to avoid touching shared iterator state
+        iter_all = product(
+            self.rot_x_range,
+            self.rot_y_range,
+            self.rot_z_range,
+            self.trans_x_range,
+            self.trans_y_range,
+            self.trans_z_range
+        )
+
+        sliced = islice(iter_all, start_index, end_index + 1)
+
+        idx = start_index
+        for rx, ry, rz, tx, ty, tz in sliced:
+            if self.is_cancelled:
+                break
+
+            # Compute pose matrix using same logic as process_batch
+            if self.operational_mode == 'ISB_STANDARD':
+                pose_matrix = calculate_pose_for_isb_standard_mode(
+                    rx, ry, rz, tx, ty, tz, None, self.acsm_initial_local, acsm_obj=self.acsm_obj)
+            elif self.operational_mode == 'INTUITIVE':
+                pose_matrix = calculate_pose_for_intuitive_mode(
+                    rx, ry, rz, tx, ty, tz, None, self.acsm_initial_local, acsm_obj=self.acsm_obj)
+            elif self.operational_mode == 'MG_HINGE':
+                pose_matrix = calculate_pose_for_mg_hinge_mode(
+                    rx, ry, rz, tx, ty, tz, self.props, self.acsm_initial_local)
+            else:
+                idx += 1
+                continue
+
+            # Apply pose locally (bone or object)
+            acsm_bone_name, use_acsm_bone = self._get_acsm_bone_info(self.props)
+            if use_acsm_bone:
+                pose_bone = self.acsm_obj.pose.bones.get(acsm_bone_name)
+                if pose_bone:
+                    pose_bone.matrix = pose_matrix
+            else:
+                self.acsm_obj.matrix_local = pose_matrix
+
+            # Update scene for collision detection
+            bpy.context.view_layer.update()
+
+            collision = self._check_collision_original_method()
+
+            results_csv.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
+
+            if not collision:
+                results_valids.append({
+                    "pose_index": idx,
+                    "pose_params": [rx, ry, rz, tx, ty, tz],
+                    "pose_matrix": self._matrix_to_list(pose_matrix),
+                    "rx": rx, "ry": ry, "rz": rz,
+                    "tx": tx, "ty": ty, "tz": tz
+                })
+
+            idx += 1
+
+        return {"csv_rows": results_csv, "valids": results_valids}
+
+    def merge_worker_payload(self, payload):
+        """Merge a worker payload (csv_rows + valids) into the in-process structures.
+
+        This must be called on the main thread/modal handler to safely mutate Blender data.
+        """
+        csv_rows = payload.get('csv_rows', [])
+        valids = payload.get('valids', [])
+
+        # Append CSV rows (respect "only_export_valid_poses" option)
+        for row in csv_rows:
+            # row format: [rx,ry,rz,tx,ty,tz, valid_flag]
+            if not getattr(self.props, 'only_export_valid_poses', False) or row[-1] == 1:
+                self.csv_data.append(row)
+
+        # Convert valid entries and append
+        for v in valids:
+            matrix = self._list_to_matrix(v.get('pose_matrix'))
+            self.valid_poses.append({
+                'pose_params': tuple(v.get('pose_params', [])),
+                'pose_matrix': matrix,
+                'rx': v.get('rx'), 'ry': v.get('ry'), 'rz': v.get('rz'),
+                'tx': v.get('tx'), 'ty': v.get('ty'), 'tz': v.get('tz')
+            })
+
+        # Update processed count and skip-tracking (so in-process fallback won't reprocess these indices)
+        prev = self.processed_poses
+        self.processed_poses += len(csv_rows)
+        self._skip_remaining = getattr(self, '_skip_remaining', 0) + len(csv_rows)
+        print(f"Merged worker payload: +{len(csv_rows)} csv rows, +{len(valids)} valids (processed {prev} -> {self.processed_poses})")
 
     def cancel(self):
         """Cancel processing"""
@@ -912,6 +1042,172 @@ class OptimizedROMProcessor:
         }
 
 
+# --- Headless worker spawn & reader helpers ---
+
+def _reader_thread(proc, q, worker_id):
+    """Reader thread that parses stdout lines from a worker and enqueues structured messages."""
+    buffer = None
+    try:
+        for raw in iter(proc.stdout.readline, ''):
+            if raw is None:
+                break
+            line = raw.strip()
+            if not line:
+                continue
+
+            if line.startswith('ROMF_PROGRESS'):
+                try:
+                    payload = json.loads(line[len('ROMF_PROGRESS'):].strip())
+                    q.put(("progress", payload, worker_id))
+                except Exception:
+                    continue
+            elif line == 'ROMF_RESULT_START':
+                buffer = []
+            elif line == 'ROMF_RESULT_END':
+                if buffer is not None:
+                    try:
+                        blob = ''.join(buffer)
+                        payload = json.loads(blob)
+                        q.put(("result", payload, worker_id))
+                    except Exception:
+                        q.put(("error", {"msg": "Invalid result JSON"}, worker_id))
+                    buffer = None
+            elif line.startswith('ROMF_ERROR'):
+                try:
+                    payload = json.loads(line[len('ROMF_ERROR'):].strip())
+                except Exception:
+                    payload = {"msg": line}
+                q.put(("error", payload, worker_id))
+            else:
+                if buffer is not None:
+                    buffer.append(line)
+                else:
+                    # Treat non-protocol lines as logs so we can surface worker stdout for debugging
+                    q.put(("log", line, worker_id))
+    except Exception as exc:
+        q.put(("error", {"msg": str(exc), "trace": traceback.format_exc()}, worker_id))
+    finally:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+
+
+def start_headless_workers_async(blend_file, worker_script, total_poses, worker_count=1, chunk_size=1000, blender_exec=None, timeout=1800, props_b64=None):
+    """Start headless worker processes and return worker objects list.
+
+    Each worker object is a dict: {proc, queue, thread, start, end, worker_id}
+    """
+    workers = []
+
+    if not blender_exec:
+        blender_exec = bpy.app.binary_path
+
+    import math
+    chunk = math.ceil(total_poses / max(1, worker_count))
+
+    for i in range(worker_count):
+        start = i * chunk
+        end = min(total_poses - 1, (i + 1) * chunk - 1)
+        if start > end:
+            continue
+
+        cmd = [blender_exec, blend_file, '--background', '--python', str(worker_script), '--',
+               '--start-index', str(start), '--end-index', str(end), '--emit-chunk', str(min(chunk, chunk_size)), '--worker-id', str(i)]
+
+        # If we have props encoded, pass them to the worker (base64 JSON to avoid quoting issues)
+        props_file_path = None
+        if props_b64:
+            # Always write props JSON to a temp file to avoid command-line length/quoting issues on Windows
+            try:
+                import tempfile
+                tmpf = tempfile.NamedTemporaryFile(delete=False, prefix='romf_props_', suffix='.json')
+                tmpf.write(__import__('base64').b64decode(props_b64.encode('ascii')))
+                tmpf.close()
+                props_file_path = tmpf.name
+                cmd.extend(['--props-json-file', props_file_path])
+            except Exception:
+                # Fallback to passing as b64 on CLI if file creation fails
+                cmd.extend(['--props-json-b64', props_b64])
+
+        print(f"Starting worker {i}: {' '.join(cmd)}")
+
+        # Basic sanity check
+        if '--start-index' not in cmd or '--end-index' not in cmd:
+            raise RuntimeError(f"Worker command missing required args: {cmd!r}")
+
+        try:
+            # Merge stderr into stdout to avoid blocking on stderr buffer and to allow the reader to see Blender logs/errors
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        except Exception as exc:
+            # If a worker fails to start, terminate started ones and re-raise
+            for w in workers:
+                try:
+                    w['proc'].terminate()
+                except Exception:
+                    pass
+            raise
+
+        # Give process a short moment to exit early (argparse failures etc.)
+        try:
+            import time as _time
+            _time.sleep(0.05)
+        except Exception:
+            pass
+
+        rc = p.poll()
+        if rc is not None and rc != 0:
+            try:
+                out, _ = p.communicate(timeout=1)
+            except Exception:
+                out = ''
+            print(f"Worker {i} exited immediately with code {rc}. argv={p.args} Output:\n{out[:4000]}")
+            # Do not start a reader thread for this process; record it as done
+            q = queue.Queue()
+            workers.append({
+                'proc': p,
+                'queue': q,
+                'thread': None,
+                'start': start,
+                'end': end,
+                'worker_id': i,
+                'last_progress': 0,
+                'total': (end - start + 1),
+                'done': True,
+                'last_output_time': time.time(),
+                'props_file': props_file_path
+            })
+            continue
+
+        # Otherwise start the reader thread to stream messages
+        q = queue.Queue()
+        t = threading.Thread(target=_reader_thread, args=(p, q, i), daemon=True)
+        t.start()
+
+        workers.append({
+            'proc': p,
+            'queue': q,
+            'thread': t,
+            'start': start,
+            'end': end,
+            'worker_id': i,
+            'last_progress': 0,
+            'total': (end - start + 1),
+            'done': False,
+            'last_output_time': time.time(),
+            'props_file': props_file_path
+        })
+
+        # Small pause between starting workers to reduce contention
+        try:
+            import time as _time
+            _time.sleep(0.02)
+        except Exception:
+            pass
+
+    return workers
+
+
 class COLLISION_OT_calculate_parallel(Operator):
     """Optimized collision calculation using efficient batching"""
     bl_idname = "collision.calculate_parallel"
@@ -958,6 +1254,177 @@ class COLLISION_OT_calculate_parallel(Operator):
                     
                     return {'PASS_THROUGH'}
                 
+                # If using headless workers, drain their queues and update aggregated progress
+                if hasattr(self, '_using_workers') and self._using_workers:
+                    any_active = False
+                    total_processed = 0
+                    total_total = 0
+
+                    for w in self._workers:
+                        # Drain queue
+                        q = w['queue']
+                        while not q.empty():
+                            msg_type, payload, wid = q.get()
+                            # update last-output time whenever we see any message from this worker
+                            w['last_output_time'] = time.time()
+                            if msg_type == 'progress':
+                                w['last_progress'] = int(payload.get('processed', 0))
+                                w['total'] = int(payload.get('total', w.get('total', w['total'])))
+                            elif msg_type == 'result':
+                                try:
+                                    self._processor.merge_worker_payload(payload)
+                                except Exception as e:
+                                    print(f"Error merging payload from worker {wid}: {e}")
+                                w['done'] = True
+                            elif msg_type == 'error':
+                                print(f"Worker {wid} error: {payload}")
+                                w['done'] = True
+                            elif msg_type == 'log':
+                                # Surface logs coming from worker stdout for debugging
+                                print(f"[Worker {wid}] {payload}")
+                                # Optionally publish to props.time_remaining for visibility
+                                props.time_remaining = f"Worker {wid}: {payload[:80]}"
+
+                        # Check process status
+                        p = w['proc']
+                        rc = p.poll()
+                        # If process still running and not done, mark as active
+                        if rc is None and not w.get('done'):
+                            any_active = True
+                        # If process exited with non-zero and hasn't reported, mark as done and warn
+                        elif rc is not None and rc != 0 and not w.get('done'):
+                            print(f"Worker {w['worker_id']} exited with code {rc}")
+                            w['done'] = True
+
+                        # Aggregate progress
+                        total_processed += w.get('last_progress', 0)
+                        total_total += w.get('total', 0)
+
+                    # Compute progress percentage
+                    pct = (total_processed / total_total * 100.0) if total_total > 0 else 0.0
+                    props.calculation_progress = pct
+
+                    # Update time remaining using aggregated processed
+                    if self._processor.start_time and total_processed > 0:
+                        elapsed = time.time() - self._processor.start_time
+                        poses_per_second = total_processed / elapsed if elapsed > 0 else 0
+                        remaining_poses = max(0, (self._processor.total_poses - total_processed))
+                        remaining_time = remaining_poses / poses_per_second if poses_per_second > 0 else 0
+                        mins, secs = divmod(int(remaining_time), 60)
+                        props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
+
+                    # If no worker is active (all finished)
+                    if not any_active:
+                        # If workers produced no results, fall back to in-process processing
+                        if total_processed == 0 and len(self._workers) > 0:
+                            # If the user opted for workers-only mode, abort instead of falling back
+                            if getattr(props, 'headless_workers_only', False):
+                                print("No worker results collected; aborting due to workers-only mode")
+                                props.time_remaining = "Workers-only mode: aborting due to worker failure"
+                                # Cleanup worker handles and temp props files
+                                try:
+                                    for w in self._workers:
+                                        try:
+                                            w['proc'].wait(timeout=0.1)
+                                        except Exception:
+                                            pass
+                                        try:
+                                            pf = w.get('props_file')
+                                            if pf and os.path.exists(pf):
+                                                os.unlink(pf)
+                                        except Exception:
+                                            pass
+                                finally:
+                                    self._using_workers = False
+                                    self._workers = []
+
+                                # Cancel processing and report error to user
+                                self.cancel_processing(context)
+                                self.report({'ERROR'}, "Headless workers failed (workers-only mode). Aborting the run.")
+                                return {'CANCELLED'}
+
+                            # Otherwise fall back to in-process as before
+                            print("No worker results collected; falling back to in-process processing")
+                            props.time_remaining = "Falling back to in-process processing due to worker failure"
+                            # Cleanup worker handles and switch mode
+                            try:
+                                for w in self._workers:
+                                    try:
+                                        w['proc'].wait(timeout=0.1)
+                                    except Exception:
+                                        pass
+                            finally:
+                                self._using_workers = False
+                                self._workers = []
+
+                            # Let next timer tick continue with in-process batches
+                            return {'PASS_THROUGH'}
+
+                        # Otherwise, finalize with merged results
+                        try:
+                            if self._processor.export_results(props):
+                                elapsed = time.time() - self._processor.start_time
+                                mins, secs = divmod(int(elapsed), 60)
+                                poses_per_second = self._processor.processed_poses / elapsed if elapsed > 0 else 0
+                                self.report({'INFO'},
+                                            f"Collision detection complete! Found {len(self._processor.valid_poses):,} valid poses "
+                                            f"in {mins:02d}:{secs:02d} ({poses_per_second:.0f} poses/sec)")
+                            else:
+                                self.report({'WARNING'}, "Export had issues")
+                        except Exception as e:
+                            self.report({'ERROR'}, f"Export failed: {e}")
+
+                        # Keyframe creation
+                        if props.visualize_collisions and self._processor.valid_poses:
+                            if self._processor.start_keyframe_creation(props):
+                                return {'PASS_THROUGH'}
+                            else:
+                                self.report({'WARNING'}, "Could not start keyframe creation")
+
+                        # Cleanup worker handles
+                        try:
+                            for w in self._workers:
+                                try:
+                                    w['proc'].wait(timeout=0.1)
+                                except Exception:
+                                    pass
+                        finally:
+                            # Cleanup worker handles and any temp props files
+                            try:
+                                for w in self._workers:
+                                    try:
+                                        pf = w.get('props_file')
+                                        if pf and os.path.exists(pf):
+                                            os.unlink(pf)
+                                    except Exception:
+                                        pass
+                            finally:
+                                self._using_workers = False
+                                self._workers = []
+
+                        self.finish_processing(context)
+                        return {'FINISHED'}
+
+                    # Watchdog: kill workers that haven't produced output
+                    for w in self._workers:
+                        timeout = getattr(props, 'headless_worker_timeout', 1800)
+                        if time.time() - w.get('last_output_time', 0) > timeout and w.get('proc') and w['proc'].poll() is None:
+                            print(f"Worker {w['worker_id']} timed out after {timeout}s, terminating")
+                            try:
+                                w['proc'].terminate()
+                            except Exception:
+                                pass
+                            w['done'] = True
+                            props.time_remaining = f"Worker {w['worker_id']} timed out, falling back to in-process"
+                            # Fall back: mark remaining as not using workers; we will let modal continue and main thread can resume in-process
+                            self._using_workers = False
+                            # No immediate return; let next tick handle fallback and merging
+                            break
+
+                    return {'PASS_THROUGH'}
+
+                    return {'PASS_THROUGH'}
+
                 # Normal collision detection processing
                 batch_size = max(1, props.batch_size)  # Use user-specified batch size
                 still_processing = self._processor.process_batch(batch_size)
@@ -1040,7 +1507,64 @@ class COLLISION_OT_calculate_parallel(Operator):
             self.report({'INFO'}, "Initializing optimized ROM processor...")
             self._processor.initialize(props)
             self._processor.start_processing()
-            
+
+            # Attempt to start headless workers if .blend saved and worker script exists
+            blend_path = bpy.data.filepath
+            worker_script = Path(__file__).with_name('worker_headless.py')
+            self._using_workers = False
+            self._workers = []
+
+            try:
+                if blend_path and os.path.exists(worker_script) and self._processor.total_poses > 0:
+                    worker_count = max(1, min(props.headless_worker_count, self._processor.total_poses))
+
+                    # Serialize small set of props to pass to workers (base64 JSON to avoid shell quoting issues)
+                    import base64
+                    props_dict = {
+                        'proximal_object': props.proximal_object.name if props.proximal_object else None,
+                        'distal_object': props.distal_object.name if props.distal_object else None,
+                        'ACSf_object': props.ACSf_object.name if props.ACSf_object else None,
+                        'ACSm_object': props.ACSm_object.name if props.ACSm_object else None,
+                        'ACSm_bone': props.ACSm_bone,
+                        'rotation_mode_enum': props.rotation_mode_enum,
+                        'rot_x_min': props.rot_x_min, 'rot_x_max': props.rot_x_max, 'rot_x_inc': props.rot_x_inc,
+                        'rot_y_min': props.rot_y_min, 'rot_y_max': props.rot_y_max, 'rot_y_inc': props.rot_y_inc,
+                        'rot_z_min': props.rot_z_min, 'rot_z_max': props.rot_z_max, 'rot_z_inc': props.rot_z_inc,
+                        'trans_x_min': props.trans_x_min, 'trans_x_max': props.trans_x_max, 'trans_x_inc': props.trans_x_inc,
+                        'trans_y_min': props.trans_y_min, 'trans_y_max': props.trans_y_max, 'trans_y_inc': props.trans_y_inc,
+                        'trans_z_min': props.trans_z_min, 'trans_z_max': props.trans_z_max, 'trans_z_inc': props.trans_z_inc,
+                        'use_convex_hull': bool(props.use_convex_hull_optimization),
+                        'use_aabb_precheck': bool(props.use_aabb_precheck),
+                        'aabb_margin': float(props.aabb_margin),
+                        'use_proxy_collision': bool(props.use_proxy_collision),
+                        'proxy_decimate_ratio': float(props.proxy_decimate_ratio),
+                        'only_export_valid_poses': bool(props.only_export_valid_poses)
+                    }
+                    props_json_b64 = base64.b64encode(json.dumps(props_dict).encode('utf-8')).decode('ascii')
+
+                    try:
+                        self._workers = start_headless_workers_async(
+                            blend_path,
+                            worker_script,
+                            self._processor.total_poses,
+                            worker_count=worker_count,
+                            chunk_size=props.headless_chunk_size,
+                            blender_exec=(props.headless_worker_exec or None),
+                            timeout=props.headless_worker_timeout,
+                            props_b64=props_json_b64,
+                        )
+                        self._using_workers = True
+                        props.time_remaining = "Launching headless workers..."
+                        print(f"Launched {len(self._workers)} headless workers")
+                    except Exception as exc:
+                        print(f"Failed to launch headless workers: {exc}")
+                        self._using_workers = False
+                        self._workers = []
+                else:
+                    print("Headless workers unavailable (unsaved file or worker script missing)")
+            except Exception as exc:
+                print(f"Error while attempting to start workers: {exc}")
+
             # Start modal timer for batch processing
             wm = context.window_manager
             self._timer = wm.event_timer_add(0.05, window=context.window)  # 20 FPS update
@@ -1057,7 +1581,23 @@ class COLLISION_OT_calculate_parallel(Operator):
         """Cancel the processing"""
         if self._processor:
             self._processor.cancel()
-        
+
+        # Terminate any headless workers
+        if hasattr(self, '_workers') and self._workers:
+            for w in self._workers:
+                try:
+                    p = w.get('proc')
+                    if p and p.poll() is None:
+                        p.terminate()
+                except Exception:
+                    pass
+                try:
+                    pf = w.get('props_file')
+                    if pf and os.path.exists(pf):
+                        os.unlink(pf)
+                except Exception:
+                    pass
+
         self._cleanup_modal_state(context)
         self.report({'INFO'}, "Optimized processing cancelled")
 

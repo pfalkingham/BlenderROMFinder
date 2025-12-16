@@ -170,6 +170,19 @@ class COLLISION_PT_panel(Panel):
         box.prop(props, "use_proxy_collision")
         if props.use_proxy_collision:
             box.prop(props, "proxy_decimate_ratio")
+
+        # Headless worker settings (used automatically when .blend is saved)
+        box.separator()
+        row = box.row(align=True)
+        row.label(text="Headless Workers:")
+        row.prop(props, "headless_worker_count", text="Workers")
+        box.prop(props, "headless_chunk_size")
+        box.prop(props, "headless_worker_timeout")
+        box.prop(props, "headless_worker_exec")
+        box.prop(props, "headless_workers_only", text="Workers-only mode")
+        if props.headless_workers_only:
+            row = box.row()
+            row.label(text="Workers-only mode: the run will abort on worker failure.", icon='ERROR')
         
         # Calculate button - place this OUTSIDE any box
         row = layout.row(align=True)

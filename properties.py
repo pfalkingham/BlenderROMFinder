@@ -346,6 +346,42 @@ class CollisionProperties(PropertyGroup):
         description="Estimated time remaining for the calculation",
         default=""
     )
+
+    # Headless worker settings (used when a saved .blend is available)
+    headless_worker_count: IntProperty(
+        name="Worker Count",
+        description="Number of headless Blender worker processes to use (defaults to CPU count)",
+        default=(__import__('os').cpu_count() or 1),
+        min=1,
+        max=64
+    )
+
+    headless_chunk_size: IntProperty(
+        name="Chunk Size",
+        description="Approximate number of poses per worker chunk (the code will split total poses across workers)",
+        default=1000,
+        min=1
+    )
+
+    headless_worker_timeout: IntProperty(
+        name="Worker Timeout (s)",
+        description="Seconds to wait for a worker before killing it and falling back",
+        default=1800,
+        min=10
+    )
+
+    headless_worker_exec: StringProperty(
+        name="Blender Executable",
+        description="Optional path to a Blender executable to use for headless workers. Leave empty to use current Blender.",
+        default="",
+        subtype='FILE_PATH'
+    )
+
+    headless_workers_only: BoolProperty(
+        name="Workers-only mode",
+        description="When enabled, abort the run if headless workers fail (do NOT fall back to in-process).",
+        default=False
+    )
     
     export_to_csv: BoolProperty(
         name="Export to CSV",
