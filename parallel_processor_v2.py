@@ -120,6 +120,14 @@ class OptimizedROMProcessor:
         self._np_verts = None
         self._np_hull_verts = None
 
+    def _debug_print(self, *args, **kwargs):
+        """Print debug messages only when Debug Mode is enabled."""
+        try:
+            if getattr(self, 'props', None) and getattr(self.props, 'debug_mode', False):
+                print(*args, **kwargs)
+        except Exception:
+            pass
+
     def _get_acsm_bone_info(self, props):
         """Get ACSm bone name and whether to use bone"""
         acsm_bone_name = getattr(props, 'ACSm_bone', None)
@@ -550,7 +558,7 @@ class OptimizedROMProcessor:
                 avg_pose_time = total_pose_time / len(batch_poses)
                 avg_update_time = total_update_time / len(batch_poses)  
                 avg_collision_time = total_collision_time / len(batch_poses)
-                print(f"  Timing per pose - Pose calc: {avg_pose_time:.4f}s, Scene update: {avg_update_time:.4f}s, Collision: {avg_collision_time:.4f}s")
+                self._debug_print(f"  Timing per pose - Pose calc: {avg_pose_time:.4f}s, Scene update: {avg_update_time:.4f}s, Collision: {avg_collision_time:.4f}s")
 
         return self.processed_poses < self.total_poses and not self.is_cancelled
 
@@ -574,7 +582,7 @@ class OptimizedROMProcessor:
         if self.use_aabb_precheck and self._prox_bounds:
             dist_min, dist_max = self._get_world_bounds(self.dist_obj)
             if not self._aabb_overlap(self._prox_bounds[0], self._prox_bounds[1], dist_min, dist_max, self.aabb_margin):
-                print(f"    AABB early exit: {time.time() - start_time:.6f}s")
+                self._debug_print(f"    AABB early exit: {time.time() - start_time:.6f}s")
                 return False
 
         bvh_start = time.time()
@@ -587,7 +595,7 @@ class OptimizedROMProcessor:
                 dist_world_matrix
             )
             if dist_hull_bvh and not self._prox_hull_bvh.overlap(dist_hull_bvh):
-                print(f"    Hull early exit: {time.time() - start_time:.6f}s")
+                self._debug_print(f"    Hull early exit: {time.time() - start_time:.6f}s")
                 return False  # Hulls don't overlap, no collision possible
 
         # Full mesh collision check using cached data
@@ -615,7 +623,7 @@ class OptimizedROMProcessor:
         
         # Only print timing for slow collisions (>0.01s)
         if total_time > 0.01:
-            print(f"    Slow collision - BVH: {bvh_time:.4f}s, Overlap: {overlap_time:.4f}s, Total: {total_time:.4f}s")
+            self._debug_print(f"    Slow collision - BVH: {bvh_time:.4f}s, Overlap: {overlap_time:.4f}s, Total: {total_time:.4f}s")
         
         return len(overlaps) > 0
 
@@ -1280,8 +1288,9 @@ class COLLISION_OT_calculate_parallel(Operator):
                                 print(f"Worker {wid} error: {payload}")
                                 w['done'] = True
                             elif msg_type == 'log':
-                                # Surface logs coming from worker stdout for debugging
-                                print(f"[Worker {wid}] {payload}")
+                                # Surface logs coming from worker stdout for debugging (only in Debug Mode)
+                                if props.debug_mode:
+                                    print(f"[Worker {wid}] {payload}")
                                 # Optionally publish to props.time_remaining for visibility
                                 props.time_remaining = f"Worker {wid}: {payload[:80]}"
 
@@ -1513,6 +1522,18 @@ class COLLISION_OT_calculate_parallel(Operator):
             worker_script = Path(__file__).with_name('worker_headless.py')
             self._using_workers = False
             self._workers = []
+
+            # If the .blend isn't saved, prompt the user to save and abort processing if they cancel.
+            if not blend_path:
+                # Inform the user and invoke Blender's save dialog (INVOKE_DEFAULT opens the file dialog)
+                self.report({'INFO'}, "Please save the .blend file before launching headless workers.")
+                try:
+                    bpy.ops.wm.save_mainfile('INVOKE_DEFAULT')
+                except Exception:
+                    # If invoking save failed for any reason, just abort safely
+                    pass
+                props.is_calculating = False
+                return {'CANCELLED'}
 
             try:
                 if blend_path and os.path.exists(worker_script) and self._processor.total_poses > 0:

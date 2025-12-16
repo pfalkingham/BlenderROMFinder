@@ -100,9 +100,11 @@ def parse_args_manual():
 
 
 def main():
-    # Debug: print argv the worker received
+    # Debug: print argv the worker received (only when explicitly requested by env or flag)
     try:
-        print("ROMF_DEBUG ARGV " + json.dumps(sys.argv), flush=True)
+        debug_flag = os.environ.get('ROMF_DEBUG') == '1' or '--debug' in sys.argv
+        if debug_flag:
+            print("ROMF_DEBUG ARGV " + json.dumps(sys.argv), flush=True)
     except Exception:
         pass
 
@@ -114,8 +116,17 @@ def main():
         sys.exit(2)
 
     try:
-        # Print a startup banner so parent can see worker started
-        print(f"ROMF_DEBUG Worker {args['worker_id']} starting: range {args['start_index']}-{args['end_index']}", flush=True)
+        # Print a startup banner so parent can see worker started (only when debug requested)
+        try:
+            # If props were provided, allow them to enable debug as well
+            if 'props_dict' in locals() and props_dict:
+                if props_dict.get('debug_mode'):
+                    print(f"ROMF_DEBUG Worker {args['worker_id']} starting: range {args['start_index']}-{args['end_index']}", flush=True)
+            else:
+                if os.environ.get('ROMF_DEBUG') == '1' or '--debug' in sys.argv:
+                    print(f"ROMF_DEBUG Worker {args['worker_id']} starting: range {args['start_index']}-{args['end_index']}", flush=True)
+        except Exception:
+            pass
 
         # If props passed via JSON (file or b64), decode and create a temporary props object
         props_dict = None
