@@ -412,6 +412,11 @@ class COLLISION_OT_calculate(Operator):
             
             if self._total_iterations > 0: 
                 props.calculation_progress = (self._completed_iterations / self._total_iterations) * 100.0
+                # Ensure the UI updates immediately
+                try:
+                    self._tag_redraw(context)
+                except Exception:
+                    pass
                 # (your time remaining and UI refresh logic)
 
         # ... (Standard end of batch: reset ACSm visual for next batch, check if finished) ...
@@ -488,7 +493,12 @@ class COLLISION_OT_calculate(Operator):
         if not cancelled and hasattr(self, '_completed_iterations') and hasattr(self, '_total_iterations') and self._total_iterations > 0:
             if self._completed_iterations >= self._total_iterations:
                 props.calculation_progress = 100.0
-        # else keep props.calculation_progress as is if cancelled
+
+        # Ensure UI reflects final state immediately
+        try:
+            self._tag_redraw(context)
+        except Exception:
+            pass        # else keep props.calculation_progress as is if cancelled
 
         self._is_initialized = False; self._is_finished = True
         
@@ -556,6 +566,22 @@ class COLLISION_OT_calculate(Operator):
         else: # If not initialized, just ensure the flag is off
             props.is_calculating = False
         return {'CANCELLED'}
+
+    def _tag_redraw(self, context):
+        """Force a UI redraw so progress properties are visible without user interaction."""
+        try:
+            wm = context.window_manager
+            for win in wm.windows:
+                try:
+                    for area in win.screen.areas:
+                        area.tag_redraw()
+                except Exception:
+                    continue
+        except Exception:
+            try:
+                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+            except Exception:
+                pass
 
 class COLLISION_OT_confirm_calculation(Operator):
     """Confirm orientation/location before collision calculation"""

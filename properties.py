@@ -284,7 +284,7 @@ class CollisionProperties(PropertyGroup):
     use_convex_hull_optimization: BoolProperty(
         name="Use Convex Hull Pre-Check",
         description="Enable to use a faster convex hull pre-check. WARNING: May give incorrect non-collision results if one object can be fully contained within the other. Disable for full accuracy in such cases.",
-        default=False  # Off by default
+        default=True  
     )
 
     use_aabb_precheck: BoolProperty(
@@ -359,7 +359,7 @@ class CollisionProperties(PropertyGroup):
     headless_chunk_size: IntProperty(
         name="Chunk Size",
         description="Approximate number of poses per worker chunk (the code will split total poses across workers)",
-        default=1000,
+        default=10,
         min=1
     )
 
@@ -379,8 +379,8 @@ class CollisionProperties(PropertyGroup):
 
     headless_workers_only: BoolProperty(
         name="Workers-only mode",
-        description="When enabled, abort the run if headless workers fail (do NOT fall back to in-process).",
-        default=False
+        description="When off, will fallback to single process if workers fail; when on, the calculation will abort if any worker fails",
+        default=True
     )
     
     export_to_csv: BoolProperty(
@@ -392,7 +392,7 @@ class CollisionProperties(PropertyGroup):
     only_export_valid_poses: BoolProperty(
         name="Only export valid poses",
         description="When enabled, only write valid (non-colliding) poses to the CSV",
-        default=False,
+        default=True,
         update=tag_redraw
     )
     
@@ -410,7 +410,7 @@ class CollisionProperties(PropertyGroup):
     )
     debug_mode: BoolProperty(
         name="Debug Mode",
-        description="When enabled, visualizes ALL poses (both colliding and non-colliding) with different keyframes for debugging purposes",
+        description="When enabled, more verbose, and visualizes ALL poses (both colliding and non-colliding) with different keyframes for debugging purposes",
         default=False,
         update=lambda self, context: update_debug_mode(self, context)
     )

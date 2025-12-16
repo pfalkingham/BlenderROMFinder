@@ -182,7 +182,7 @@ class COLLISION_PT_panel(Panel):
         box.prop(props, "headless_workers_only", text="Workers-only mode")
         if props.headless_workers_only:
             row = box.row()
-            row.label(text="Workers-only mode: the run will abort on worker failure.", icon='ERROR')
+            row.label(text="Workers-only mode: the run will abort on worker failure.")
         
         # Calculate button - place this OUTSIDE any box
         row = layout.row(align=True)
@@ -192,13 +192,13 @@ class COLLISION_PT_panel(Panel):
         # High-Performance Optimized calculate button
         row = layout.row(align=True)
         row.scale_y = 1.2
-        row.operator("collision.calculate_parallel", icon='MOD_ARRAY', text="High-Performance Optimized (experimental)")
+        row.operator("collision.calculate_parallel", icon='MOD_ARRAY', text="High-Performance")
         
         # Add info about optimized processing
         info_box = layout.box()
         info_box.scale_y = 0.8
-        info_box.label(text="Optimized processing uses efficient batching", icon='INFO')
-        info_box.label(text="         with the same collision logic as original")
+        info_box.label(text="Optimized processing uses parallel batching, ", icon='INFO')
+        info_box.label(text="headless workers, and optimizations.")
         
         # Minimum X distance finder
         box = layout.box()

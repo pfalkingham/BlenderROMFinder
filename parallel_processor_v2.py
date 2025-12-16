@@ -1240,6 +1240,25 @@ class COLLISION_OT_calculate_parallel(Operator):
         
         props.is_calculating = False
 
+    def _tag_redraw(self, context):
+        """Force all areas to redraw so UI updates (progress bar, labels) are visible.
+        Calling tag_redraw on areas ensures the sidebar updates even when no mouse events occur."""
+        try:
+            wm = context.window_manager
+            for win in wm.windows:
+                try:
+                    for area in win.screen.areas:
+                        # Tag all areas to be safe; Blender will ignore if not needed
+                        area.tag_redraw()
+                except Exception:
+                    continue
+        except Exception:
+            # As a last resort, call the global redraw timer (safer fallback)
+            try:
+                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+            except Exception:
+                pass
+
     def modal(self, context, event):
         props = context.scene.collision_props
 
@@ -1321,6 +1340,12 @@ class COLLISION_OT_calculate_parallel(Operator):
                         remaining_time = remaining_poses / poses_per_second if poses_per_second > 0 else 0
                         mins, secs = divmod(int(remaining_time), 60)
                         props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
+
+                    # Ensure the UI is redrawn so the progress bar and time update immediately
+                    try:
+                        self._tag_redraw(context)
+                    except Exception:
+                        pass
 
                     # If no worker is active (all finished)
                     if not any_active:
@@ -1451,6 +1476,12 @@ class COLLISION_OT_calculate_parallel(Operator):
                     mins, secs = divmod(int(remaining_time), 60)
                     props.time_remaining = f"Time remaining: {mins:02d}:{secs:02d}"
 
+                # Force a redraw so the sidebar progress bar updates responsively
+                try:
+                    self._tag_redraw(context)
+                except Exception:
+                    pass
+
                 if not still_processing:
                     # Collision detection complete - export CSV
                     try:
@@ -1523,15 +1554,13 @@ class COLLISION_OT_calculate_parallel(Operator):
             self._using_workers = False
             self._workers = []
 
-            # If the .blend isn't saved, prompt the user to save and abort processing if they cancel.
-            if not blend_path:
+            # If the .blend isn't saved, or has unsaved changes, we must prompt the user to save.
+            # Headless workers require a saved file to load from disk.
+            if not blend_path or bpy.data.is_dirty:
                 # Inform the user and invoke Blender's save dialog (INVOKE_DEFAULT opens the file dialog)
-                self.report({'INFO'}, "Please save the .blend file before launching headless workers.")
-                try:
-                    bpy.ops.wm.save_mainfile('INVOKE_DEFAULT')
-                except Exception:
-                    # If invoking save failed for any reason, just abort safely
-                    pass
+                self.report({'WARNING'}, "Please save the .blend file to run the high-performance mode.")
+                # By returning {'CANCELLED'}, we stop the operator. The user must click "High-Performance" again after saving.
+                # This is standard Blender practice for operators that depend on a saved file.
                 props.is_calculating = False
                 return {'CANCELLED'}
 
@@ -1627,6 +1656,11 @@ class COLLISION_OT_calculate_parallel(Operator):
         self._cleanup_modal_state(context)
         props = context.scene.collision_props
         props.calculation_progress = 100.0
+        # Force UI update so final state is visible
+        try:
+            self._tag_redraw(context)
+        except Exception:
+            pass
 
     def cancel(self, context):
         """Operator cancel method"""
