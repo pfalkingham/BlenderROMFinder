@@ -486,9 +486,11 @@ class OptimizedROMProcessor:
         total_pose_time = 0
         total_update_time = 0
         total_collision_time = 0
-        for rx, ry, rz, tx, ty, tz in batch_poses:
+        for i, (rx, ry, rz, tx, ty, tz) in enumerate(batch_poses):
             if self.is_cancelled:
                 break
+
+            pose_index = batch_start + i
 
             # Calculate pose matrix (same as original)
             if self.operational_mode == 'ISB_STANDARD':
@@ -530,10 +532,11 @@ class OptimizedROMProcessor:
             
             # Add to CSV data (respect "only export valid poses" option)
             if not getattr(self.props, 'only_export_valid_poses', False) or (not collision):
-                self.csv_data.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
+                self.csv_data.append([pose_index, rx, ry, rz, tx, ty, tz, 0 if collision else 1])
             
             if not collision:
                 self.valid_poses.append({
+                    'pose_index': pose_index,
                     'pose_params': (rx, ry, rz, tx, ty, tz),
                     'pose_matrix': pose_matrix.copy(),
                     'rx': rx, 'ry': ry, 'rz': rz,
@@ -704,7 +707,7 @@ class OptimizedROMProcessor:
 
             collision = self._check_collision_original_method()
 
-            results_csv.append([rx, ry, rz, tx, ty, tz, 0 if collision else 1])
+            results_csv.append([idx, rx, ry, rz, tx, ty, tz, 0 if collision else 1])
 
             if not collision:
                 results_valids.append({
@@ -737,6 +740,7 @@ class OptimizedROMProcessor:
         for v in valids:
             matrix = self._list_to_matrix(v.get('pose_matrix'))
             self.valid_poses.append({
+                'pose_index': v.get('pose_index'),
                 'pose_params': tuple(v.get('pose_params', [])),
                 'pose_matrix': matrix,
                 'rx': v.get('rx'), 'ry': v.get('ry'), 'rz': v.get('rz'),
@@ -791,6 +795,12 @@ class OptimizedROMProcessor:
             print("❌ No valid target for keyframes")
             return False
 
+        # Ensure valid poses are ordered by pose_index (serial order)
+        try:
+            self.valid_poses.sort(key=lambda v: v.get('pose_index', 0))
+        except Exception:
+            pass
+
         # Disable auto-keyframing
         scene = bpy.context.scene
         self.original_use_keyframe_insert_auto = scene.tool_settings.use_keyframe_insert_auto
@@ -819,20 +829,8 @@ class OptimizedROMProcessor:
         total_poses = len(self.valid_poses)
         batch_start = self.keyframe_batch_index * self.keyframe_batch_size
         
-        # --- 1. INITIALIZATION (Run once on first batch) ---
-        if self.keyframe_batch_index == 0:
-            self.collected_data = {
-                "location": {0: [], 1: [], 2: []},
-                "rotation_euler": {0: [], 1: [], 2: []},
-                # If using quaternions, add rotation_quaternion here
-                '["input_rot_x"]': {0: []},
-                '["input_rot_y"]': {0: []},
-                '["input_rot_z"]': {0: []},
-                '["input_trans_x"]': {0: []},
-                '["input_trans_y"]': {0: []},
-                '["input_trans_z"]': {0: []},
-            }
-            self.frames = []
+        # Determine whether the target is a PoseBone (affects data paths and attribute access)
+        is_pose_bone = isinstance(self.keyframe_target, bpy.types.PoseBone)
 
         # --- 2. FINISH CONDITION ---
         if batch_start >= total_poses:
@@ -848,37 +846,92 @@ class OptimizedROMProcessor:
         props.calculation_progress = progress
         props.time_remaining = f"Calculating data: {batch_end:,}/{total_poses:,} ({progress:.1f}%)"
         
-        # --- 3. FAST BATCH PROCESSING (Pure Math, No Scene Updates) ---
+# --- 3. BATCH PROCESSING (Set pose, update, read back actual channel values) ---
         # Determine rotation mode once
         rot_mode = self.keyframe_target.rotation_mode
-        
+
+        # Initialize collected_data on first batch
+        if self.keyframe_batch_index == 0:
+            self.collected_data = {
+                "location": {0: [], 1: [], 2: []},
+                # rotation storage depends on rotation mode
+                '["input_rot_x"]': {0: []},
+                '["input_rot_y"]': {0: []},
+                '["input_rot_z"]': {0: []},
+                '["input_trans_x"]': {0: []},
+                '["input_trans_y"]': {0: []},
+                '["input_trans_z"]': {0: []},
+                }
+            if rot_mode == 'QUATERNION':
+                self.collected_data['rotation_quaternion'] = {0: [], 1: [], 2: [], 3: []}
+            else:
+                self.collected_data['rotation_euler'] = {0: [], 1: [], 2: []}
+            self.frames = []
+
         for i, pose_data in enumerate(batch_poses):
             frame = batch_start + i + 1
             self.frames.append(frame)
-            
-            # Decompose Matrix
+
+            # Prepare matrix (could be stored as list or Matrix)
             matrix = pose_data['pose_matrix']
-            trans = matrix.to_translation()
-            rot = matrix.to_euler(rot_mode) # Force euler based on obj settings
+            if isinstance(matrix, list):
+                matrix = self._list_to_matrix(matrix)
 
-            # Store Location
-            self.collected_data["location"][0].append(trans.x)
-            self.collected_data["location"][1].append(trans.y)
-            self.collected_data["location"][2].append(trans.z)
+            # Apply pose to target (pose bone or object)
+            if is_pose_bone:
+                pose_bone = self.keyframe_target
+                pose_bone.matrix = matrix
+            else:
+                self.keyframe_target.matrix_local = matrix
 
-            # Store Rotation
-            self.collected_data["rotation_euler"][0].append(rot.x)
-            self.collected_data["rotation_euler"][1].append(rot.y)
-            self.collected_data["rotation_euler"][2].append(rot.z)
+            # Set custom props so they are present on the target
+            self.keyframe_target["input_rot_x"] = pose_data['rx']
+            self.keyframe_target["input_rot_y"] = pose_data['ry']
+            self.keyframe_target["input_rot_z"] = pose_data['rz']
+            self.keyframe_target["input_trans_x"] = pose_data['tx']
+            self.keyframe_target["input_trans_y"] = pose_data['ty']
+            self.keyframe_target["input_trans_z"] = pose_data['tz']
+            self.keyframe_target["Valid pose"] = 1
 
-            # Store Custom Props
-            self.collected_data['["input_rot_x"]'][0].append(pose_data['rx'])
-            self.collected_data['["input_rot_y"]'][0].append(pose_data['ry'])
-            self.collected_data['["input_rot_z"]'][0].append(pose_data['rz'])
-            
-            self.collected_data['["input_trans_x"]'][0].append(pose_data['tx'])
-            self.collected_data['["input_trans_y"]'][0].append(pose_data['ty'])
-            self.collected_data['["input_trans_z"]'][0].append(pose_data['tz'])
+            # Update scene to let Blender compute exact channel values
+            bpy.context.view_layer.update()
+
+            # Read back location
+            if is_pose_bone:
+                loc = pose_bone.location
+            else:
+                loc = self.keyframe_target.location
+
+            self.collected_data["location"][0].append(loc.x)
+            self.collected_data["location"][1].append(loc.y)
+            self.collected_data["location"][2].append(loc.z)
+
+            # Read back rotation depending on mode
+            if rot_mode == 'QUATERNION':
+                if is_pose_bone:
+                    q = pose_bone.rotation_quaternion
+                else:
+                    q = self.keyframe_target.rotation_quaternion
+                self.collected_data['rotation_quaternion'][0].append(q.w)
+                self.collected_data['rotation_quaternion'][1].append(q.x)
+                self.collected_data['rotation_quaternion'][2].append(q.y)
+                self.collected_data['rotation_quaternion'][3].append(q.z)
+            else:
+                if is_pose_bone:
+                    e = pose_bone.rotation_euler
+                else:
+                    e = self.keyframe_target.rotation_euler
+                self.collected_data['rotation_euler'][0].append(e.x)
+                self.collected_data['rotation_euler'][1].append(e.y)
+                self.collected_data['rotation_euler'][2].append(e.z)
+
+            # Store Custom Props (read back to be safe)
+            self.collected_data['["input_rot_x"]'][0].append(self.keyframe_target.get('input_rot_x'))
+            self.collected_data['["input_rot_y"]'][0].append(self.keyframe_target.get('input_rot_y'))
+            self.collected_data['["input_rot_z"]'][0].append(self.keyframe_target.get('input_rot_z'))
+            self.collected_data['["input_trans_x"]'][0].append(self.keyframe_target.get('input_trans_x'))
+            self.collected_data['["input_trans_y"]'][0].append(self.keyframe_target.get('input_trans_y'))
+            self.collected_data['["input_trans_z"]'][0].append(self.keyframe_target.get('input_trans_z'))
 
         self.keyframe_batch_index += 1
         return True 
@@ -1011,13 +1064,28 @@ class OptimizedROMProcessor:
                 dirpath = os.path.dirname(filepath)
                 if dirpath:
                     os.makedirs(dirpath, exist_ok=True)
-                
+
+                # Prepare rows: if rows include a leading pose_index column (from parallel workers),
+                # sort by that index and drop the index column before writing.
+                header = self.csv_data[0]
+                rows = self.csv_data[1:]
+
+                indexed_rows = [r for r in rows if len(r) >= 8 and isinstance(r[0], int)]
+                nonindexed_rows = [r for r in rows if not (len(r) >= 8 and isinstance(r[0], int))]
+
+                # Sort indexed rows by pose_index so CSV will have serial order
+                indexed_rows_sorted = sorted(indexed_rows, key=lambda r: r[0]) if indexed_rows else []
+
+                # Drop index column for writing and append non-indexed rows at the end
+                rows_to_write = [r[1:] for r in indexed_rows_sorted] + nonindexed_rows
+
                 with open(filepath, 'w', newline='') as csvfile:
                     writer = csv.writer(csvfile)
-                    writer.writerows(self.csv_data)
-                
+                    writer.writerow(header)
+                    writer.writerows(rows_to_write)
+
                 print(f"Results exported to: {filepath}")
-                
+
             except Exception as e:
                 print(f"❌ Error exporting CSV: {e}")
                 success = False
