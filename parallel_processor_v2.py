@@ -1213,8 +1213,9 @@ def start_headless_workers_async(blend_file, worker_script, total_poses, worker_
             raise RuntimeError(f"Worker command missing required args: {cmd!r}")
 
         try:
-            # Merge stderr into stdout to avoid blocking on stderr buffer and to allow the reader to see Blender logs/errors
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            # Discard stderr entirely so Blender's C-level output cannot interleave with the
+            # ROMF protocol on stdout and corrupt the result JSON for large payloads.
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
         except Exception as exc:
             # If a worker fails to start, terminate started ones and re-raise
             for w in workers:
