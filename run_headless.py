@@ -25,13 +25,17 @@ Options (all optional):
   --export-path  <path>    Override the CSV export path stored in the scene.
                            Supports Blender's // relative prefix.
                            Example: --export-path //results/output.csv
-  --batch-size   <int>     Poses evaluated per processing cycle (default: 500).
-                           Larger batches are faster but produce less frequent
-                           progress prints.
+  --workers      <int>     Number of parallel headless Blender worker processes
+                           to spawn (default: headless_worker_count from scene,
+                           which defaults to the CPU core count).
+  --worker-exec  <path>    Path to the Blender executable used for workers.
+                           Defaults to the current Blender binary.
+  --batch-size   <int>     Poses per batch in single-threaded fallback mode.
+  --single-threaded        Force single-threaded mode even if workers could run.
   --no-export              Skip CSV export even if export_to_csv is enabled.
   --no-save                Do NOT re-save the .blend file when finished.
-  --verbose                Print a progress line for every 1 % change instead
-                           of every 5 %.
+  --verbose                Print a progress line for every 1 % change and
+                           forward all worker log lines.
 
 EXAMPLES
 --------
@@ -72,8 +76,8 @@ if _addon_parent not in sys.path:
 # Argument parsing
 # ---------------------------------------------------------------------------
 # Our known flags — used to scan sys.argv regardless of where '--' appears.
-_KNOWN_FLAGS = {'--no-export', '--no-save', '--verbose'}
-_KNOWN_OPTS  = {'--export-path', '--batch-size'}
+_KNOWN_FLAGS = {'--no-export', '--no-save', '--verbose', '--single-threaded'}
+_KNOWN_OPTS  = {'--export-path', '--batch-size', '--workers', '--worker-exec'}
 
 def _build_args():
     """Return a list of our script's arguments.
@@ -173,6 +177,22 @@ def main():
     verbose     = _flag('--verbose')
     progress_interval = 1 if verbose else 5   # print every N percent
 
+    # -- Resolve worker count / exec ----------------------------------------
+    worker_count_override = _opt('--workers')
+    worker_exec_override  = _opt('--worker-exec')
+    single_threaded       = _flag('--single-threaded')
+
+    if worker_count_override:
+        try:
+            worker_count = max(1, int(worker_count_override))
+        except ValueError:
+            print("[ROMFinder] WARNING: --workers value is not an integer; using scene default.", flush=True)
+            worker_count = None
+    else:
+        worker_count = None  # resolved after processor init
+
+    blender_exec = worker_exec_override or (props.headless_worker_exec or None) or None
+
     # -- Print a summary of the run configuration ----------------------------
     print("=" * 60, flush=True)
     print("[ROMFinder] Headless High-Performance Run", flush=True)
@@ -192,6 +212,22 @@ def main():
     print("=" * 60, flush=True)
 
     # -- Initialise processor ------------------------------------------------
+    import base64
+    import queue as _queue
+    from pathlib import Path
+
+    # Import worker-spawning helpers from the addon
+    try:
+        import BlenderROMFinder.parallel_processor_v2 as _pp2
+        start_headless_workers_async = _pp2.start_headless_workers_async
+        # worker_headless.py lives next to parallel_processor_v2.py in the addon folder
+        worker_script = Path(_pp2.__file__).with_name('worker_headless.py')
+    except Exception as exc:
+        print(f"[ROMFinder] WARNING: could not import worker helpers ({exc}); will run single-threaded.",
+              flush=True)
+        start_headless_workers_async = None
+        worker_script = None
+
     proc = OptimizedROMProcessor()
     try:
         proc.initialize(props)
@@ -204,34 +240,211 @@ def main():
 
     total      = proc.total_poses
     batch_size = max(1, getattr(props, 'batch_size', 500))
-    print(f"[ROMFinder] {total:,} poses to evaluate  (batch size {batch_size})", flush=True)
+
+    if worker_count is None:
+        worker_count = max(1, min(getattr(props, 'headless_worker_count',
+                                          __import__('os').cpu_count() or 1),
+                                  total))
+
+    blend_path = bpy.data.filepath
+    can_use_workers = (
+        not single_threaded
+        and start_headless_workers_async is not None
+        and worker_script is not None
+        and worker_script.exists()
+        and blend_path
+        and total > 0
+    )
+
+    print(f"[ROMFinder] {total:,} poses to evaluate", flush=True)
+    if can_use_workers:
+        print(f"[ROMFinder] Spawning {worker_count} headless worker(s) ("
+              f"worker_headless.py at {worker_script})", flush=True)
+    else:
+        reasons = []
+        if single_threaded:           reasons.append('--single-threaded flag')
+        if not blend_path:            reasons.append('file not saved')
+        if not can_use_workers and not single_threaded:
+            if worker_script and not worker_script.exists():
+                reasons.append(f'worker script not found at {worker_script}')
+        if reasons:
+            print(f"[ROMFinder] Running single-threaded ({'; '.join(reasons)})", flush=True)
+        else:
+            print("[ROMFinder] Running single-threaded", flush=True)
 
     if total == 0:
         print("[ROMFinder] WARNING: 0 poses computed — check rotation/translation ranges.", flush=True)
 
-    # -- Processing loop -----------------------------------------------------
-    t_start   = time.time()
-    last_pct  = -1
+    t_start         = time.time()
+    last_pct         = -(progress_interval + 1)   # ensure first tick always prints
+    last_print_time  = t_start                     # for time-based heartbeat
 
-    while True:
-        still_going = proc.process_batch(batch_size)
+    # -------------------------------------------------------------------------
+    # PARALLEL path — spawn N worker Blenders, poll their queues, merge results
+    # -------------------------------------------------------------------------
+    if can_use_workers:
+        # Serialise props the same way the operator does
+        props_dict = {
+            'proximal_object': props.proximal_object.name if props.proximal_object else None,
+            'distal_object':   props.distal_object.name   if props.distal_object   else None,
+            'ACSf_object':     props.ACSf_object.name     if props.ACSf_object     else None,
+            'ACSm_object':     props.ACSm_object.name     if props.ACSm_object     else None,
+            'ACSm_bone':       props.ACSm_bone,
+            'rotation_mode_enum': props.rotation_mode_enum,
+            'rot_x_min': props.rot_x_min, 'rot_x_max': props.rot_x_max, 'rot_x_inc': props.rot_x_inc,
+            'rot_y_min': props.rot_y_min, 'rot_y_max': props.rot_y_max, 'rot_y_inc': props.rot_y_inc,
+            'rot_z_min': props.rot_z_min, 'rot_z_max': props.rot_z_max, 'rot_z_inc': props.rot_z_inc,
+            'trans_x_min': props.trans_x_min, 'trans_x_max': props.trans_x_max, 'trans_x_inc': props.trans_x_inc,
+            'trans_y_min': props.trans_y_min, 'trans_y_max': props.trans_y_max, 'trans_y_inc': props.trans_y_inc,
+            'trans_z_min': props.trans_z_min, 'trans_z_max': props.trans_z_max, 'trans_z_inc': props.trans_z_inc,
+            'use_convex_hull':        bool(props.use_convex_hull_optimization),
+            'use_aabb_precheck':      bool(props.use_aabb_precheck),
+            'aabb_margin':            float(props.aabb_margin),
+            'use_proxy_collision':    bool(props.use_proxy_collision),
+            'proxy_decimate_ratio':   float(props.proxy_decimate_ratio),
+            'only_export_valid_poses': bool(props.only_export_valid_poses),
+        }
+        import json as _json
+        props_b64 = base64.b64encode(_json.dumps(props_dict).encode('utf-8')).decode('ascii')
 
-        pct = int(proc.get_progress())
-        if pct >= last_pct + progress_interval or not still_going:
-            elapsed = time.time() - t_start
-            done    = proc.processed_poses
-            if done > 0 and elapsed > 0:
-                rate = done / elapsed
-                eta  = max(0.0, (total - done) / rate)
-                m, s = divmod(int(eta), 60)
-                eta_str = f"ETA {m:02d}:{s:02d}"
-            else:
-                eta_str = "ETA --:--"
-            print(f"[ROMFinder]  {pct:3d}%  ({done:,}/{total:,} poses)  {eta_str}", flush=True)
-            last_pct = pct
+        try:
+            workers = start_headless_workers_async(
+                blend_path,
+                worker_script,
+                total,
+                worker_count=worker_count,
+                chunk_size=getattr(props, 'headless_chunk_size', 500),
+                blender_exec=blender_exec,
+                timeout=getattr(props, 'headless_worker_timeout', 1800),
+                props_b64=props_b64,
+            )
+        except Exception as exc:
+            print(f"[ROMFinder] Failed to launch workers ({exc}); falling back to single-threaded.",
+                  flush=True)
+            workers = []
 
-        if not still_going:
-            break
+        for w in workers:
+            status = 'started' if not w.get('done') else 'failed immediately'
+            pid = w['proc'].pid if w.get('proc') else '?'
+            print(f"[ROMFinder]  Worker {w['worker_id']}  PID {pid}  "
+                  f"poses {w['start']}-{w['end']}  ({status})", flush=True)
+
+        if workers:
+            # Synchronous polling loop (no Blender modal needed)
+            timeout_s = getattr(props, 'headless_worker_timeout', 1800)
+            while True:
+                any_active = False
+                total_processed = 0
+
+                for w in workers:
+                    # Drain this worker's message queue
+                    try:
+                        while True:
+                            msg_type, payload, wid = w['queue'].get_nowait()
+                            w['last_output_time'] = time.time()
+                            if msg_type == 'progress':
+                                w['last_progress'] = int(payload.get('processed', 0))
+                                w['total'] = int(payload.get('total', w.get('total', 0)))
+                            elif msg_type == 'result':
+                                proc.merge_worker_payload(payload)
+                                w['done'] = True
+                            elif msg_type == 'error':
+                                print(f"[ROMFinder] Worker {wid} error: {payload}", flush=True)
+                                w['done'] = True
+                            elif msg_type == 'log':
+                                if verbose:
+                                    print(f"[ROMFinder Worker {wid}] {payload}", flush=True)
+                    except Exception:
+                        pass  # queue.Empty or other; keep going
+
+                    # Check process exit
+                    rc = w['proc'].poll()
+                    if rc is not None and rc != 0 and not w.get('done'):
+                        print(f"[ROMFinder] Worker {w['worker_id']} exited with code {rc}",
+                              flush=True)
+                        w['done'] = True
+
+                    # Watchdog
+                    if (not w.get('done')
+                            and rc is None
+                            and time.time() - w.get('last_output_time', time.time()) > timeout_s):
+                        print(f"[ROMFinder] Worker {w['worker_id']} timed out; terminating.",
+                              flush=True)
+                        try:
+                            w['proc'].terminate()
+                        except Exception:
+                            pass
+                        w['done'] = True
+
+                    if not w.get('done') and w['proc'].poll() is None:
+                        any_active = True
+
+                    total_processed += w.get('last_progress', 0)
+
+                # Progress report — on pct milestone, time heartbeat, or completion
+                pct     = int(total_processed / total * 100) if total > 0 else 100
+                now     = time.time()
+                heartbeat = (now - last_print_time) >= 10
+                if pct >= last_pct + progress_interval or heartbeat or not any_active:
+                    elapsed = now - t_start
+                    done    = total_processed
+                    if done > 0 and elapsed > 0:
+                        eta = max(0.0, (total - done) / (done / elapsed))
+                        m, s = divmod(int(eta), 60)
+                        eta_str = f"ETA {m:02d}:{s:02d}"
+                    else:
+                        eta_str = "ETA --:--"  # workers still starting up
+                    active_count = sum(1 for w in workers if not w.get('done'))
+                    print(f"[ROMFinder]  {pct:3d}%  ({done:,}/{total:,} poses)  "
+                          f"{active_count}/{len(workers)} worker(s) active  "
+                          f"{elapsed:.0f}s elapsed  {eta_str}", flush=True)
+                    last_pct        = pct
+                    last_print_time = now
+
+                if not any_active:
+                    # Clean up temp props files
+                    for w in workers:
+                        try:
+                            pf = w.get('props_file')
+                            if pf and __import__('os').path.exists(pf):
+                                __import__('os').unlink(pf)
+                        except Exception:
+                            pass
+                    break
+
+                time.sleep(0.25)  # 4 Hz poll — low overhead
+
+            # If workers produced nothing (all failed), fall back below
+            if proc.processed_poses == 0:
+                print("[ROMFinder] All workers failed; falling back to single-threaded.",
+                      flush=True)
+                can_use_workers = False  # triggers the fallback block
+        else:
+            can_use_workers = False  # no workers started; fall through
+
+    # -------------------------------------------------------------------------
+    # SINGLE-THREADED fallback
+    # -------------------------------------------------------------------------
+    if not can_use_workers:
+        while True:
+            still_going = proc.process_batch(batch_size)
+
+            pct = int(proc.get_progress())
+            if pct >= last_pct + progress_interval or not still_going:
+                elapsed = time.time() - t_start
+                done    = proc.processed_poses
+                if done > 0 and elapsed > 0:
+                    rate = done / elapsed
+                    eta  = max(0.0, (total - done) / rate)
+                    m, s = divmod(int(eta), 60)
+                    eta_str = f"ETA {m:02d}:{s:02d}"
+                else:
+                    eta_str = "ETA --:--"
+                print(f"[ROMFinder]  {pct:3d}%  ({done:,}/{total:,} poses)  {eta_str}", flush=True)
+                last_pct = pct
+
+            if not still_going:
+                break
 
     elapsed = time.time() - t_start
     m, s    = divmod(int(elapsed), 60)
