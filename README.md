@@ -124,7 +124,8 @@ Append `--` (required) followed by options:
 
 To run through all blender files in a directory, and output csvs with according names, place run_headless.py in the directory and run:
 
-```$blender = "C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
+```
+$blender = "C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
  
 foreach ($blend in Get-ChildItem -Filter *.blend) {
  
@@ -176,3 +177,4 @@ BVH tree intersection testing, with an optional convex hull pre-check for fast r
 ---
 
 *Results should be validated against known standards. Save your work frequently during intensive calculations.*
+
