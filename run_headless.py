@@ -467,6 +467,35 @@ def main():
             print(f"[ROMFinder] ERROR during CSV export: {exc}", flush=True)
             import traceback; traceback.print_exc()
 
+    # -- Create keyframes ---------------------------------------------------
+    # The modal operator creates keyframes after export_results(), but in headless
+    # mode there is no modal loop, so we drive the batches synchronously here.
+    # Mirror the same condition the modal operator uses: props.visualize_collisions.
+    if props.visualize_collisions and proc.valid_poses:
+        print(f"[ROMFinder] Creating keyframes for {len(proc.valid_poses):,} valid poses...",
+              flush=True)
+        try:
+            if proc.start_keyframe_creation(props):
+                kf_start = time.time()
+                kf_batches = 0
+                while proc.process_keyframe_batch(props):
+                    kf_batches += 1
+                # process_keyframe_batch returns False on the *final* batch after calling
+                # apply_collected_keyframes_5_0() and finish_keyframe_creation() itself.
+                kf_elapsed = time.time() - kf_start
+                print(f"[ROMFinder] Keyframes written in {kf_elapsed:.1f}s "
+                      f"({kf_batches + 1} batch(es)).", flush=True)
+            else:
+                print("[ROMFinder] WARNING: Could not start keyframe creation.", flush=True)
+        except Exception as exc:
+            print(f"[ROMFinder] ERROR during keyframe creation: {exc}", flush=True)
+            import traceback; traceback.print_exc()
+    elif props.visualize_collisions:
+        print("[ROMFinder] No valid poses found; skipping keyframe creation.", flush=True)
+    else:
+        print("[ROMFinder] visualize_collisions is off; skipping keyframe creation "
+              "(enable it in the panel to get keyframed poses in the saved file).", flush=True)
+
     # -- Save .blend ---------------------------------------------------------
     if skip_save:
         print("[ROMFinder] Skipping .blend save (--no-save).", flush=True)

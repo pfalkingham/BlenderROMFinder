@@ -119,6 +119,25 @@ Append `--` (required) followed by options:
 | `--no-save` | Don't re-save the .blend on completion |
 | `--verbose` | Progress every 1 % + forward all worker log lines |
 
+
+**Batch processing:**
+
+To run through all blender files in a directory, and output csvs with according names, place run_headless.py in the directory and run:
+
+```$blender = "C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
+ 
+foreach ($blend in Get-ChildItem -Filter *.blend) {
+ 
+    $sceneName = $blend.BaseName
+    $outputCsv = "//$sceneName.csv"
+ 
+    & $blender `
+        --background $blend.FullName `
+        --python .\run_headless.py `
+        -- --export-path $outputCsv
+}
+```
+
 ### Troubleshooting headless runs
 
 - **Workers fail immediately** — copy the `Starting worker N: <command>` line from the output and run it directly in a terminal to see the full error.
