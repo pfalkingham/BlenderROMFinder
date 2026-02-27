@@ -64,6 +64,7 @@ class CollisionDetector:
         # Penetration-sample data
         self._np_sample_verts = None        # subsampled distal surface verts (Nx4)
         self._penetration_sample_count = 10000
+        self._penetration_definite_threshold = 20  # min inside-samples to trust T2 early-out
 
         # Proxy mesh settings
         self._use_proxy = False
@@ -81,6 +82,7 @@ class CollisionDetector:
                    use_proxy=False,
                    proxy_decimate_ratio=0.25,
                    penetration_sample_count=10000,
+                   penetration_definite_threshold=20,
                    debug=False):
         """Build all static data structures.
 
@@ -100,6 +102,11 @@ class CollisionDetector:
         penetration_sample_count : int
             Number of evenly-sampled distal surface vertices for the
             ray-parity penetration pre-check (tier 2).
+        penetration_definite_threshold : int
+            Minimum number of sampled vertices that must test as "inside" before
+            tier 2 short-circuits to *collision*.  Cases where inside-count is
+            between 3 and this value are considered **ambiguous** and fall through
+            to the full tier-3 BVH test, eliminating architecture-dependent flips.
         debug : bool
             Print timing / diagnostic messages.
         """
@@ -107,6 +114,7 @@ class CollisionDetector:
         self._dist_obj = dist_obj
         self._debug = debug
         self._penetration_sample_count = max(100, penetration_sample_count)
+        self._penetration_definite_threshold = max(3, penetration_definite_threshold)
         self._use_convex_hull = use_convex_hull
         self._use_proxy = use_proxy
         self._proxy_decimate_ratio = proxy_decimate_ratio
@@ -136,7 +144,8 @@ class CollisionDetector:
 
         if self._debug:
             print(f"[CollisionDetector] Initialised: convex_hull={self._use_convex_hull}, "
-                  f"proxy={self._use_proxy}, samples={self._penetration_sample_count}")
+                  f"proxy={self._use_proxy}, samples={self._penetration_sample_count}, "
+                  f"definite_threshold={self._penetration_definite_threshold}")
 
     def check(self, dist_world_matrix):
         """Run the 3-tier collision cascade.
@@ -162,9 +171,14 @@ class CollisionDetector:
                 return False  # hulls don't touch → no collision possible
 
         # --- Tier 2: sampled-vertex penetration → definitely invalid ---
+        # Returns: 1 = definite collision (many samples inside, skip T3)
+        #          0 = ambiguous (few samples inside, fall through to T3)
+        #         -1 = no penetration found by sampling (fall through to T3)
         if self._np_sample_verts is not None:
-            if self._positive_penetration_check(dist_world_matrix):
-                return True  # at least one sample vertex is inside proximal
+            t2_result = self._positive_penetration_check(dist_world_matrix)
+            if t2_result == 1:
+                return True  # high-confidence: many samples inside proximal
+            # t2_result 0 (ambiguous) or -1 (clean): both fall through to T3
 
         # --- Tier 3: full BVH triangle overlap (definitive) ---
         if self._np_verts is not None and self._dist_local_faces:
@@ -314,13 +328,23 @@ class CollisionDetector:
     _PARITY_RAY_DIR = Vector((1.0, 1e-5, 1e-5)).normalized()
 
     def _positive_penetration_check(self, dist_world_matrix):
-        """Return True if any sampled distal vertex is inside the proximal mesh.
+        """Check how many sampled distal vertices are inside the proximal mesh.
 
         Uses ray-parity: cast a ray from each sample point, count surface
-        crossings. Odd count → point is inside → confirmed collision.
+        crossings. Odd count → point is inside.
+
+        Returns
+        -------
+        int
+             1  — definite collision: inside_count >= ``_penetration_definite_threshold``.
+                  Caller can short-circuit to *collision* with high confidence.
+             0  — ambiguous: inside_count is between 3 and the definite threshold.
+                  Floating-point parity flips on different architectures can
+                  produce these; caller should fall through to Tier 3.
+            -1  — no penetration found (inside_count < 3).
         """
         if self._np_sample_verts is None or self._prox_bvh is None:
-            return False
+            return -1
 
         np_matrix = np.array(dist_world_matrix)
         world_pts = (np_matrix @ self._np_sample_verts.T)[:3].T
@@ -342,10 +366,12 @@ class CollisionDetector:
 
             if hit_count % 2 == 1:  # odd crossings -> point is inside
                 inside_count += 1
-                if inside_count >= 3:
-                    return True
+                if inside_count >= self._penetration_definite_threshold:
+                    return 1  # definite — many samples unambiguously inside
 
-        return False
+        if inside_count >= 3:
+            return 0   # ambiguous — some samples inside but below definite threshold
+        return -1      # no meaningful penetration detected
 
     # ------------------------------------------------------------------
     # Internal: proxy mesh
