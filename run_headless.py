@@ -140,9 +140,9 @@ def _opt(name, default=None):
 def main():
     # -- Import the processor from the addon package -------------------------
     try:
-        from BlenderROMFinder.parallel_processor_v2 import OptimizedROMProcessor
+        from BlenderROMFinder.processor import ROMProcessor
     except ImportError as exc:
-        print(f"[ROMFinder] ERROR: Could not import OptimizedROMProcessor: {exc}", flush=True)
+        print(f"[ROMFinder] ERROR: Could not import ROMProcessor: {exc}", flush=True)
         sys.exit(1)
 
     # -- Scene props ---------------------------------------------------------
@@ -218,17 +218,17 @@ def main():
 
     # Import worker-spawning helpers from the addon
     try:
-        import BlenderROMFinder.parallel_processor_v2 as _pp2
-        start_headless_workers_async = _pp2.start_headless_workers_async
-        # worker_headless.py lives next to parallel_processor_v2.py in the addon folder
-        worker_script = Path(_pp2.__file__).with_name('worker_headless.py')
+        import BlenderROMFinder.processor as _proc_mod
+        start_headless_workers_async = _proc_mod.start_headless_workers_async
+        # worker_headless.py lives next to processor.py in the addon folder
+        worker_script = Path(_proc_mod.__file__).with_name('worker_headless.py')
     except Exception as exc:
         print(f"[ROMFinder] WARNING: could not import worker helpers ({exc}); will run single-threaded.",
               flush=True)
         start_headless_workers_async = None
         worker_script = None
 
-    proc = OptimizedROMProcessor()
+    proc = ROMProcessor()
     try:
         proc.initialize(props)
     except Exception as exc:
@@ -298,8 +298,7 @@ def main():
             'trans_y_min': props.trans_y_min, 'trans_y_max': props.trans_y_max, 'trans_y_inc': props.trans_y_inc,
             'trans_z_min': props.trans_z_min, 'trans_z_max': props.trans_z_max, 'trans_z_inc': props.trans_z_inc,
             'use_convex_hull':        bool(props.use_convex_hull_optimization),
-            'use_aabb_precheck':      bool(props.use_aabb_precheck),
-            'aabb_margin':            float(props.aabb_margin),
+            'penetration_sample_count': int(props.penetration_sample_count),
             'use_proxy_collision':    bool(props.use_proxy_collision),
             'proxy_decimate_ratio':   float(props.proxy_decimate_ratio),
             'only_export_valid_poses': bool(props.only_export_valid_poses),

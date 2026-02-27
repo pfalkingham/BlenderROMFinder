@@ -287,19 +287,12 @@ class CollisionProperties(PropertyGroup):
         default=True  
     )
 
-    use_aabb_precheck: BoolProperty(
-        name="Use AABB Pre-Check",
-        description="Skip BVH when world-space bounding boxes are separated (fast coarse test)",
-        default=True
-    )
-
-    aabb_margin: FloatProperty(
-        name="AABB Margin",
-        description="Padding added to bounding boxes for the coarse test (scene units)",
-        default=0.001,
-        min=0.0,
-        max=1.0,
-        precision=4
+    penetration_sample_count: IntProperty(
+        name="Penetration Samples",
+        description="Number of evenly-sampled distal surface vertices for the ray-parity penetration pre-check. Higher values catch more collisions early but cost more per pose",
+        default=10000,
+        min=100,
+        max=50000
     )
 
     use_proxy_collision: BoolProperty(

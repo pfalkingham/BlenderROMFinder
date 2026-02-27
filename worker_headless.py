@@ -17,7 +17,7 @@ import traceback
 
 import bpy
 
-# Ensure parent of addon is on sys.path so package imports work (we want to import as BlenderROMFinder.parallel_processor_v2)
+# Ensure parent of addon is on sys.path so package imports work
 addon_dir = os.path.dirname(__file__)
 addon_parent = os.path.dirname(addon_dir)
 if addon_parent not in sys.path:
@@ -25,14 +25,14 @@ if addon_parent not in sys.path:
 
 import importlib
 try:
-    ppmod = importlib.import_module('BlenderROMFinder.parallel_processor_v2')
-    OptimizedROMProcessor = ppmod.OptimizedROMProcessor
+    ppmod = importlib.import_module('BlenderROMFinder.processor')
+    ROMProcessor = ppmod.ROMProcessor
 except Exception as e:
     # Fallback: try local import and give a helpful error
     try:
-        from parallel_processor_v2 import OptimizedROMProcessor
+        from processor import ROMProcessor
     except Exception as e2:
-        print("ROMF_ERROR " + json.dumps({"msg": "Failed to import parallel_processor_v2", "err1": str(e), "err2": str(e2)}), flush=True)
+        print("ROMF_ERROR " + json.dumps({"msg": "Failed to import processor", "err1": str(e), "err2": str(e2)}), flush=True)
         raise
 
 
@@ -178,8 +178,7 @@ def main():
             props.trans_z_max = props_dict.get('trans_z_max')
             props.trans_z_inc = props_dict.get('trans_z_inc')
             props.use_convex_hull_optimization = props_dict.get('use_convex_hull')
-            props.use_aabb_precheck = props_dict.get('use_aabb_precheck')
-            props.aabb_margin = props_dict.get('aabb_margin')
+            props.penetration_sample_count = props_dict.get('penetration_sample_count', 10000)
             props.use_proxy_collision = props_dict.get('use_proxy_collision')
             props.proxy_decimate_ratio = props_dict.get('proxy_decimate_ratio')
             props.only_export_valid_poses = props_dict.get('only_export_valid_poses')
@@ -192,10 +191,8 @@ def main():
                 props.turn_off_collisions = False
             if not hasattr(props, 'only_export_valid_poses'):
                 props.only_export_valid_poses = False
-            if not hasattr(props, 'use_aabb_precheck'):
-                props.use_aabb_precheck = True
-            if not hasattr(props, 'aabb_margin'):
-                props.aabb_margin = 0.0
+            if not hasattr(props, 'penetration_sample_count'):
+                props.penetration_sample_count = 10000
             if not hasattr(props, 'use_proxy_collision'):
                 props.use_proxy_collision = False
             if not hasattr(props, 'proxy_decimate_ratio'):
@@ -210,7 +207,7 @@ def main():
             # Fall back to scene props if not provided
             props = bpy.context.scene.collision_props
 
-        proc = OptimizedROMProcessor()
+        proc = ROMProcessor()
         proc.initialize(props)
 
         total = proc.total_poses

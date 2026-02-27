@@ -1,121 +1,112 @@
+"""
+ui.py — Sidebar panel for BlenderROMFinder.
+"""
+
 import bpy
 from bpy.types import Panel
-# Import bl_info from __init__.py
 from . import bl_info
-from .parallel_processor_v2 import get_total_pose_count
+from .processor import get_total_pose_count
+
 
 class COLLISION_PT_panel(Panel):
     """Creates a panel in the 3D View sidebar"""
-    bl_label = "Range of Motion Finder"  # We'll override this in draw
+    bl_label = "Range of Motion Finder"
     bl_idname = "COLLISION_PT_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Collision"
-    
+
     def draw(self, context):
         layout = self.layout
         props = context.scene.collision_props
 
-        # Show version at the top
+        # Version header
         version = bl_info.get("version", ("?",))
         version_str = ".".join(str(v) for v in version)
         layout.label(text=f"Range of Motion Finder v{version_str}", icon='PLUGIN')
-        
-        # Show rotation logic dropdown at the top
+
+        # Rotation logic dropdown
         layout.prop(props, "rotation_mode_enum", text="Rotation Logic")
-        
-        # Check if calculation is in progress
+
+        # --- Progress display (when calculating) ---
         if props.is_calculating:
-            # Show progress information
             box = layout.box()
             box.label(text="Calculating collisions...", icon='INFO')
-            
-            # Progress bar
             progress_row = box.row()
             progress_row.prop(props, "calculation_progress", text="Progress")
-            
-            # Time remaining
             if props.time_remaining:
                 box.label(text=props.time_remaining)
-            
-            # Cancel button
             cancel_row = box.row()
             cancel_row.operator("collision.cancel", icon='X')
-            return  # Don't show the rest of the UI while calculating
-          # Object selection
+            return
+
+        # --- Object selection ---
         box = layout.box()
         box.label(text="Objects:")
         box.prop(props, "proximal_object")
         box.prop(props, "distal_object")
         box.prop(props, "ACSf_object")
-        # Show bone dropdown if ACSf_object is an armature
         if props.ACSf_object and props.ACSf_object.type == 'ARMATURE':
             box.prop(props, "ACSf_bone")
         box.prop(props, "ACSm_object")
-        # Show bone dropdown if ACSm_object is an armature
         if props.ACSm_object and props.ACSm_object.type == 'ARMATURE':
             box.prop(props, "ACSm_bone")
-        
-        # Rotation parameters
+
+        # --- Rotation parameters ---
         box = layout.box()
         box.label(text="Rotation (degrees):")
-        
-     
-        # Add column headers for rotation
         header_row = box.row(align=True)
-        header_row.label(text="")  # Empty space for axis label
+        header_row.label(text="")
         header_row.label(text="Min")
         header_row.label(text="Max")
         header_row.label(text="Step")
-        
+
         row = box.row(align=True)
         row.label(text="X:")
         row.prop(props, "rot_x_min", text="")
         row.prop(props, "rot_x_max", text="")
         row.prop(props, "rot_x_inc", text="")
-        
+
         row = box.row(align=True)
         row.label(text="Y:")
         row.prop(props, "rot_y_min", text="")
         row.prop(props, "rot_y_max", text="")
         row.prop(props, "rot_y_inc", text="")
-        
+
         row = box.row(align=True)
         row.label(text="Z:")
         row.prop(props, "rot_z_min", text="")
         row.prop(props, "rot_z_max", text="")
         row.prop(props, "rot_z_inc", text="")
-        
-        # Translation parameters
+
+        # --- Translation parameters ---
         box = layout.box()
         box.label(text="Translation:")
-
-        # Add column headers for translation
         header_row = box.row(align=True)
-        header_row.label(text="")  # Empty space for axis label
+        header_row.label(text="")
         header_row.label(text="Min")
         header_row.label(text="Max")
         header_row.label(text="Step")
-        
+
         row = box.row(align=True)
         row.label(text="X:")
         row.prop(props, "trans_x_min", text="")
         row.prop(props, "trans_x_max", text="")
         row.prop(props, "trans_x_inc", text="")
-        
+
         row = box.row(align=True)
         row.label(text="Y:")
         row.prop(props, "trans_y_min", text="")
         row.prop(props, "trans_y_max", text="")
         row.prop(props, "trans_y_inc", text="")
-        
+
         row = box.row(align=True)
         row.label(text="Z:")
         row.prop(props, "trans_z_min", text="")
         row.prop(props, "trans_z_max", text="")
         row.prop(props, "trans_z_inc", text="")
 
-        # Total poses (product of per-axis step counts)
+        # --- Total pose count ---
         box = layout.box()
         try:
             total = get_total_pose_count(props)
@@ -123,12 +114,10 @@ class COLLISION_PT_panel(Panel):
             total = 0
         count_row = box.row()
         count_row.label(text=f"Total poses to search: {total:,}")
-        
-        # Output settings
+
+        # --- Output settings ---
         box = layout.box()
         box.label(text="Output:")
-        
-        # CSV Export options
         row = box.row(align=True)
         row.prop(props, "export_to_csv")
         sub = row.row()
@@ -136,42 +125,32 @@ class COLLISION_PT_panel(Panel):
         sub.prop(props, "only_export_valid_poses", text="Only export valid poses")
         if props.export_to_csv:
             box.prop(props, "export_path")
-        
-        # Animation layer (visualization) option - always show
+
         box.prop(props, "visualize_collisions")
         if props.visualize_collisions:
             info_row = box.row()
             info_row.label(text="Check NLA Editor to see animations", icon='INFO')
-        
-        # Debug mode option
+
         box.prop(props, "debug_mode")
         if props.debug_mode:
             debug_row = box.row()
             debug_row.label(text="Debug: Shows ALL poses (colliding + valid)", icon='INFO')
             debug_row = box.row()
             debug_row.prop(props, "turn_off_collisions")
-        
-        # Performance options - keep this as a SEPARATE box
+
+        # --- Performance options ---
         box = layout.box()
         box.label(text="Performance Options:", icon='PREFERENCES')
-        
-        # Batch size
         box.prop(props, "batch_size")
-        
-        # Add checkbox for convex hull optimization
         box.prop(props, "use_convex_hull_optimization")
+        box.prop(props, "penetration_sample_count")
 
-        # Coarse AABB pre-check
-        box.prop(props, "use_aabb_precheck")
-        if props.use_aabb_precheck:
-            box.prop(props, "aabb_margin")
-
-        # Proxy mesh option
+        # Proxy mesh
         box.prop(props, "use_proxy_collision")
         if props.use_proxy_collision:
             box.prop(props, "proxy_decimate_ratio")
 
-        # Headless worker settings (used automatically when .blend is saved)
+        # Headless workers
         box.separator()
         row = box.row(align=True)
         row.label(text="Headless Workers:")
@@ -181,24 +160,13 @@ class COLLISION_PT_panel(Panel):
         if props.headless_workers_only:
             row = box.row()
             row.label(text="Workers-only mode: the run will abort on worker failure.")
-        
-        # Calculate button - place this OUTSIDE any box
+
+        # --- Calculate button (single unified button) ---
         row = layout.row(align=True)
         row.scale_y = 1.5
         row.operator("collision.confirm_calculate", icon='PLAY')
-        
-        # High-Performance Optimized calculate button
-        row = layout.row(align=True)
-        row.scale_y = 1.2
-        row.operator("collision.calculate_parallel", icon='MOD_ARRAY', text="High-Performance")
-        
-        # Add info about optimized processing
-        info_box = layout.box()
-        info_box.scale_y = 0.8
-        info_box.label(text="Optimized processing uses parallel batching, ", icon='INFO')
-        info_box.label(text="headless workers, and optimizations.")
-        
-        # Minimum X distance finder
+
+        # --- Minimum X distance finder ---
         box = layout.box()
         box.label(text="Find Minimum X Distance:", icon='ARROW_LEFTRIGHT')
         row = box.row(align=True)
@@ -206,8 +174,7 @@ class COLLISION_PT_panel(Panel):
         row = box.row(align=True)
         row.scale_y = 1.2
         row.operator("collision.find_min_x_distance", icon='VIEWZOOM')
-        
-        # Show found distance if available
+
         if props.min_x_distance_found:
             result_row = box.row()
             result_row.label(text=f"Found distance: {props.min_x_distance_result:.6f}", icon='CHECKMARK')
