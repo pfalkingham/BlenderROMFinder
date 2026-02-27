@@ -328,6 +328,7 @@ class CollisionDetector:
         ray_dir = self._PARITY_RAY_DIR
         EPS = 1e-5
         MAX_CROSSINGS = 100
+        inside_count = 0
 
         for pt_xyz in world_pts:
             origin = Vector((float(pt_xyz[0]), float(pt_xyz[1]), float(pt_xyz[2])))
@@ -339,8 +340,10 @@ class CollisionDetector:
                 hit_count += 1
                 origin = hit_loc + ray_dir * EPS
 
-            if hit_count % 2 == 1:
-                return True
+            if hit_count % 2 == 1:  # odd crossings -> point is inside
+                inside_count += 1
+                if inside_count >= 3:
+                    return True
 
         return False
 
