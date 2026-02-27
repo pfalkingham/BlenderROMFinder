@@ -255,8 +255,29 @@ class OptimizedROMProcessor:
         # Create NumPy array for fast matrix multiplication (Nx4 for homogeneous coords)
         self._np_verts = np.array([[v.co.x, v.co.y, v.co.z, 1.0] for v in mesh.vertices])
 
+        # Build ~100 evenly-strided actual mesh vertices for the positive penetration pre-check.
+        # These are real surface points — unlike AABB corners which may be in empty space.
+        # If any of these are inside the proximal mesh we have confirmed interpenetration
+        # without needing to build a distal BVHTree at all.
+        n_verts = len(mesh.vertices)
+        _N_SAMPLES = 10000
+        if n_verts <= _N_SAMPLES:
+            # Mesh is small enough — use every vertex
+            sample_indices = range(n_verts)
+        else:
+            # Evenly-spaced stride across the vertex array.
+            # Using a fixed stride (rather than random) gives deterministic behaviour
+            # and ensures good spatial spread for regular meshes.
+            stride = n_verts // _N_SAMPLES
+            sample_indices = range(0, n_verts, stride)
+        self._np_sample_verts = np.array(
+            [[mesh.vertices[i].co.x, mesh.vertices[i].co.y, mesh.vertices[i].co.z, 1.0]
+             for i in sample_indices]
+        )
+
         obj.to_mesh_clear()
-        print(f"  Cached distal mesh: {len(self._dist_local_verts)} verts, {len(self._dist_local_faces)} faces")
+        print(f"  Cached distal mesh: {len(self._dist_local_verts)} verts, {len(self._dist_local_faces)} faces"
+              f" | {len(self._np_sample_verts)} penetration sample points")
 
 
     def _create_bvh_from_cached(self, np_verts, faces, transform_matrix):
@@ -274,6 +295,54 @@ class OptimizedROMProcessor:
         # Convert back to 3D coordinates (divide by w, but w=1 so just take xyz)
         transformed_verts = transformed_homogeneous[:3].T.tolist()
         return mathutils.bvhtree.BVHTree.FromPolygons(transformed_verts, faces)
+
+    # Slightly off-axis ray direction avoids edge-aligned faces on axis-aligned meshes.
+    _PARITY_RAY_DIR = Vector((1.0, 1e-5, 1e-5)).normalized()
+
+    def _positive_penetration_check(self, dist_world_matrix):
+        """Return True if any sampled distal surface vertex is inside the proximal mesh.
+
+        Uses the standard **ray-parity** (crossing-number) algorithm against
+        the static proximal BVH — no BVH rebuilding required.
+
+        For each sample point, a ray is cast toward +X (slightly off-axis to
+        avoid edge-aligned faces).  All surface crossings are counted by
+        repeatedly advancing the origin past each hit.  An odd crossing count
+        means the point is inside the mesh -> confirmed collision.
+
+        This is more robust than find_nearest (which fails near sharp convex
+        edges) and avoids the grazing-angle false positives of the
+        normal-dot-direction voting approach.
+
+        Returns True (confirmed collision) or False (inconclusive — fall
+        through to full BVH overlap test).
+        """
+        if self._np_sample_verts is None or self.prox_bvh is None:
+            return False
+
+        np_matrix = np.array(dist_world_matrix)
+        # Transform all sample points in one NumPy call -> shape (N, 3)
+        world_pts = (np_matrix @ self._np_sample_verts.T)[:3].T
+
+        ray_dir = self._PARITY_RAY_DIR
+        EPS = 1e-5          # offset to advance past each hit surface
+        MAX_CROSSINGS = 100  # safety limit (bone meshes typically have 0-6)
+
+        for pt_xyz in world_pts:
+            origin = Vector((float(pt_xyz[0]), float(pt_xyz[1]), float(pt_xyz[2])))
+            hit_count = 0
+            while hit_count < MAX_CROSSINGS:
+                hit_loc, _, _, _ = self.prox_bvh.ray_cast(origin, ray_dir)
+                if hit_loc is None:
+                    break
+                hit_count += 1
+                # Advance origin just past the hit to find the next crossing
+                origin = hit_loc + ray_dir * EPS
+
+            if hit_count % 2 == 1:  # odd crossings -> point is inside
+                return True
+
+        return False
 
     def _setup_convex_hulls(self, dist_collision_obj):
         """Create convex hull BVHs for proximal (static) and cache distal hull data."""
@@ -600,6 +669,16 @@ class OptimizedROMProcessor:
             if dist_hull_bvh and not self._prox_hull_bvh.overlap(dist_hull_bvh):
                 self._debug_print(f"    Hull early exit: {time.time() - start_time:.6f}s")
                 return False  # Hulls don't overlap, no collision possible
+
+        # ---- Positive penetration pre-check ----
+        # Inverse of AABB/hull culling: instead of skipping definitely-NOT-colliding poses,
+        # this confirms definitely-IS-colliding poses without building the distal BVH.
+        # Critical when collision rate is high (e.g. 99%) since the BVH build is otherwise
+        # paid on almost every pose.
+        if self._np_sample_verts is not None:
+            if self._positive_penetration_check(dist_world_matrix):
+                self._debug_print(f"    Penetration sample confirmed collision: {time.time() - start_time:.6f}s")
+                return True
 
         # Full mesh collision check using cached data
         if self._dist_local_verts and self._dist_local_faces:
