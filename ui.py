@@ -8,6 +8,34 @@ from . import bl_info
 from .processor import get_total_pose_count
 
 
+DECIMAL_PRECISION_THRESHOLD = 6  # flag step values needing more than this many decimal places
+
+
+def _step_is_imprecise(val):
+    """Return True if *val* needs more than DECIMAL_PRECISION_THRESHOLD
+    decimal places to represent — e.g. back-calculation of 60/7 gives
+    8.5714286, which has 7 dp and is flagged as potentially imprecise.
+
+    Blender FloatProperty stores values as 32-bit floats, so a clean 0.01
+    may be read back as 0.009999999776… in Python.  We normalise to 7
+    decimal places first (float32 has ~7 significant digits) to suppress
+    that storage noise before checking.
+    """
+    if val == 0.0:
+        return False
+    # Normalise away float32 storage noise, then count decimal places
+    s = f"{round(val, 7):.15g}"
+    if '.' not in s:
+        return False
+    after_dot = s.split('.')[1].rstrip('0')
+    return len(after_dot) > DECIMAL_PRECISION_THRESHOLD
+
+
+def _inc_is_non_integer(val):
+    """Return True if *val* is not (close to) a whole number."""
+    return abs(val - round(val)) > 1e-4
+
+
 class COLLISION_PT_panel(Panel):
     """Creates a panel in the 3D View sidebar"""
     bl_label = "Range of Motion Finder"
@@ -59,25 +87,41 @@ class COLLISION_PT_panel(Panel):
         header_row.label(text="")
         header_row.label(text="Min")
         header_row.label(text="Max")
-        header_row.label(text="Step")
+        header_row.label(text="Increment")
+        header_row.label(text="Poses")
 
         row = box.row(align=True)
         row.label(text="X:")
         row.prop(props, "rot_x_min", text="")
         row.prop(props, "rot_x_max", text="")
-        row.prop(props, "rot_x_inc", text="")
+        step_x = row.row(align=True)
+        step_x.alert = _step_is_imprecise(props.rot_x_inc)
+        step_x.prop(props, "rot_x_inc", text="")
+        inc_x = row.row(align=True)
+        inc_x.alert = _inc_is_non_integer(props.rot_x_num_inc)
+        inc_x.prop(props, "rot_x_num_inc", text="")
 
         row = box.row(align=True)
         row.label(text="Y:")
         row.prop(props, "rot_y_min", text="")
         row.prop(props, "rot_y_max", text="")
-        row.prop(props, "rot_y_inc", text="")
+        step_y = row.row(align=True)
+        step_y.alert = _step_is_imprecise(props.rot_y_inc)
+        step_y.prop(props, "rot_y_inc", text="")
+        inc_y = row.row(align=True)
+        inc_y.alert = _inc_is_non_integer(props.rot_y_num_inc)
+        inc_y.prop(props, "rot_y_num_inc", text="")
 
         row = box.row(align=True)
         row.label(text="Z:")
         row.prop(props, "rot_z_min", text="")
         row.prop(props, "rot_z_max", text="")
-        row.prop(props, "rot_z_inc", text="")
+        step_z = row.row(align=True)
+        step_z.alert = _step_is_imprecise(props.rot_z_inc)
+        step_z.prop(props, "rot_z_inc", text="")
+        inc_z = row.row(align=True)
+        inc_z.alert = _inc_is_non_integer(props.rot_z_num_inc)
+        inc_z.prop(props, "rot_z_num_inc", text="")
 
         # --- Translation parameters ---
         box = layout.box()
@@ -86,25 +130,41 @@ class COLLISION_PT_panel(Panel):
         header_row.label(text="")
         header_row.label(text="Min")
         header_row.label(text="Max")
-        header_row.label(text="Step")
+        header_row.label(text="Increment")
+        header_row.label(text="Poses")
 
         row = box.row(align=True)
         row.label(text="X:")
         row.prop(props, "trans_x_min", text="")
         row.prop(props, "trans_x_max", text="")
-        row.prop(props, "trans_x_inc", text="")
+        step_x = row.row(align=True)
+        step_x.alert = _step_is_imprecise(props.trans_x_inc)
+        step_x.prop(props, "trans_x_inc", text="")
+        inc_x = row.row(align=True)
+        inc_x.alert = _inc_is_non_integer(props.trans_x_num_inc)
+        inc_x.prop(props, "trans_x_num_inc", text="")
 
         row = box.row(align=True)
         row.label(text="Y:")
         row.prop(props, "trans_y_min", text="")
         row.prop(props, "trans_y_max", text="")
-        row.prop(props, "trans_y_inc", text="")
+        step_y = row.row(align=True)
+        step_y.alert = _step_is_imprecise(props.trans_y_inc)
+        step_y.prop(props, "trans_y_inc", text="")
+        inc_y = row.row(align=True)
+        inc_y.alert = _inc_is_non_integer(props.trans_y_num_inc)
+        inc_y.prop(props, "trans_y_num_inc", text="")
 
         row = box.row(align=True)
         row.label(text="Z:")
         row.prop(props, "trans_z_min", text="")
         row.prop(props, "trans_z_max", text="")
-        row.prop(props, "trans_z_inc", text="")
+        step_z = row.row(align=True)
+        step_z.alert = _step_is_imprecise(props.trans_z_inc)
+        step_z.prop(props, "trans_z_inc", text="")
+        inc_z = row.row(align=True)
+        inc_z.alert = _inc_is_non_integer(props.trans_z_num_inc)
+        inc_z.prop(props, "trans_z_num_inc", text="")
 
         # --- Total pose count ---
         box = layout.box()
@@ -170,7 +230,7 @@ class COLLISION_PT_panel(Panel):
         box = layout.box()
         box.label(text="Find Minimum X Distance:", icon='ARROW_LEFTRIGHT')
         row = box.row(align=True)
-        row.prop(props, "min_x_distance_increment", text="Increment")
+        row.prop(props, "min_x_distance_increment", text="Step")
         row = box.row(align=True)
         row.scale_y = 1.2
         row.operator("collision.find_min_x_distance", icon='VIEWZOOM')

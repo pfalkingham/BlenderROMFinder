@@ -9,6 +9,7 @@ from bpy.props import (
     FloatVectorProperty,
     EnumProperty
 )
+from .processor import compute_num_inc
 
 def update_debug_mode(self, context):
     if not self.debug_mode:
@@ -24,6 +25,42 @@ def tag_redraw(self, context):
     except Exception:
         # Be forgiving in case context doesn't provide screen/areas
         pass
+
+
+# ---------------------------------------------------------------------------
+# Virtual "num_inc" (number of intervals) getter/setter pairs.
+# These are explicit named functions — NOT lambdas — to avoid Blender RNA
+# garbage-collecting closures after addon registration.
+# Getters call compute_num_inc from processor.py (single source of truth).
+# Setters back-calculate the step size from the desired number of intervals.
+# ---------------------------------------------------------------------------
+
+def _set_inc(self, axis, value):
+    # value is number of points (including both endpoints); increment = range / (points - 1)
+    diff = getattr(self, f"{axis}_max") - getattr(self, f"{axis}_min")
+    if value <= 1.0 or diff == 0.0:
+        setattr(self, f"{axis}_inc", 0.0)
+    else:
+        setattr(self, f"{axis}_inc", diff / (value - 1))
+
+def get_rot_x_num_inc(self): return compute_num_inc(self.rot_x_min, self.rot_x_max, self.rot_x_inc)
+def set_rot_x_num_inc(self, v): _set_inc(self, 'rot_x', v)
+
+def get_rot_y_num_inc(self): return compute_num_inc(self.rot_y_min, self.rot_y_max, self.rot_y_inc)
+def set_rot_y_num_inc(self, v): _set_inc(self, 'rot_y', v)
+
+def get_rot_z_num_inc(self): return compute_num_inc(self.rot_z_min, self.rot_z_max, self.rot_z_inc)
+def set_rot_z_num_inc(self, v): _set_inc(self, 'rot_z', v)
+
+def get_trans_x_num_inc(self): return compute_num_inc(self.trans_x_min, self.trans_x_max, self.trans_x_inc)
+def set_trans_x_num_inc(self, v): _set_inc(self, 'trans_x', v)
+
+def get_trans_y_num_inc(self): return compute_num_inc(self.trans_y_min, self.trans_y_max, self.trans_y_inc)
+def set_trans_y_num_inc(self, v): _set_inc(self, 'trans_y', v)
+
+def get_trans_z_num_inc(self): return compute_num_inc(self.trans_z_min, self.trans_z_max, self.trans_z_inc)
+def set_trans_z_num_inc(self, v): _set_inc(self, 'trans_z', v)
+
 
 class CollisionProperties(PropertyGroup):
     # Object selection
@@ -90,8 +127,8 @@ class CollisionProperties(PropertyGroup):
         description="Minimum X rotation in degrees",
         default=-30.0,
         min=-360.0,
-        max=360.0
-        ,
+        max=360.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -100,8 +137,8 @@ class CollisionProperties(PropertyGroup):
         description="Maximum X rotation in degrees",
         default=30.0,
         min=-360.0,
-        max=360.0
-        ,
+        max=360.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -120,8 +157,8 @@ class CollisionProperties(PropertyGroup):
         description="Minimum Y rotation in degrees",
         default=-30.0,
         min=-360.0,
-        max=360.0
-        ,
+        max=360.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -130,8 +167,8 @@ class CollisionProperties(PropertyGroup):
         description="Maximum Y rotation in degrees",
         default=30.0,
         min=-360.0,
-        max=360.0
-        ,
+        max=360.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -150,8 +187,8 @@ class CollisionProperties(PropertyGroup):
         description="Minimum Z rotation in degrees",
         default=-30.0,
         min=-360.0,
-        max=360.0
-        ,
+        max=360.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -160,8 +197,8 @@ class CollisionProperties(PropertyGroup):
         description="Maximum Z rotation in degrees",
         default=30.0,
         min=-360.0,
-        max=360.0
-        ,
+        max=360.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -174,7 +211,12 @@ class CollisionProperties(PropertyGroup):
         ,
         update=tag_redraw
     )
-    
+
+    # Virtual: derived from (max-min)/inc + 1 — no stored value.
+    # step=100 makes the arrow buttons change the value by exactly 1 (step is in units of 1/100).
+    rot_x_num_inc: FloatProperty(name="Rot X Poses", description="Number of poses searched including both endpoints. Non-integer means the increment doesn't divide the range evenly — the last interval will be truncated.", step=100, precision=4, get=get_rot_x_num_inc, set=set_rot_x_num_inc)
+    rot_y_num_inc: FloatProperty(name="Rot Y Poses", description="Number of poses searched including both endpoints. Non-integer means the increment doesn't divide the range evenly — the last interval will be truncated.", step=100, precision=4, get=get_rot_y_num_inc, set=set_rot_y_num_inc)
+    rot_z_num_inc: FloatProperty(name="Rot Z Poses", description="Number of poses searched including both endpoints. Non-integer means the increment doesn't divide the range evenly — the last interval will be truncated.", step=100, precision=4, get=get_rot_z_num_inc, set=set_rot_z_num_inc)
 
     rotation_mode_enum: EnumProperty(
         name="Rotation Logic",
@@ -193,8 +235,8 @@ class CollisionProperties(PropertyGroup):
         description="Minimum X translation",
         default=0.0,
         min=-100.0,
-        max=100.0
-        ,
+        max=100.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -203,8 +245,8 @@ class CollisionProperties(PropertyGroup):
         description="Maximum X translation",
         default=0.0,
         min=-100.0,
-        max=100.0
-        ,
+        max=100.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -224,8 +266,8 @@ class CollisionProperties(PropertyGroup):
         description="Minimum Y translation",
         default=0.0,
         min=-100.0,
-        max=100.0
-        ,
+        max=100.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -234,8 +276,8 @@ class CollisionProperties(PropertyGroup):
         description="Maximum Y translation",
         default=0.0,
         min=-100.0,
-        max=100.0
-        ,
+        max=100.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -255,8 +297,8 @@ class CollisionProperties(PropertyGroup):
         description="Minimum Z translation",
         default=0.0,
         min=-100.0,
-        max=100.0
-        ,
+        max=100.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -265,8 +307,8 @@ class CollisionProperties(PropertyGroup):
         description="Maximum Z translation",
         default=0.0,
         min=-100.0,
-        max=100.0
-        ,
+        max=100.0,
+        precision=4,
         update=tag_redraw
     )
     
@@ -280,7 +322,13 @@ class CollisionProperties(PropertyGroup):
         ,
         update=tag_redraw
     )
-    
+
+    # Virtual: derived from (max-min)/inc + 1 — no stored value.
+    # step=100 makes the arrow buttons change the value by exactly 1 (step is in units of 1/100).
+    trans_x_num_inc: FloatProperty(name="Trans X Poses", description="Number of poses searched including both endpoints. Non-integer means the increment doesn't divide the range evenly — the last interval will be truncated.", step=100, precision=4, get=get_trans_x_num_inc, set=set_trans_x_num_inc)
+    trans_y_num_inc: FloatProperty(name="Trans Y Poses", description="Number of poses searched including both endpoints. Non-integer means the increment doesn't divide the range evenly — the last interval will be truncated.", step=100, precision=4, get=get_trans_y_num_inc, set=set_trans_y_num_inc)
+    trans_z_num_inc: FloatProperty(name="Trans Z Poses", description="Number of poses searched including both endpoints. Non-integer means the increment doesn't divide the range evenly — the last interval will be truncated.", step=100, precision=4, get=get_trans_z_num_inc, set=set_trans_z_num_inc)
+
     use_convex_hull_optimization: BoolProperty(
         name="Use Convex Hull Pre-Check",
         description="Enable to use a faster convex hull pre-check. WARNING: May give incorrect non-collision results if one object can be fully contained within the other. Disable for full accuracy in such cases.",

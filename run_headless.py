@@ -302,6 +302,8 @@ def main():
             'use_proxy_collision':    bool(props.use_proxy_collision),
             'proxy_decimate_ratio':   float(props.proxy_decimate_ratio),
             'only_export_valid_poses': bool(props.only_export_valid_poses),
+            'debug_mode':             bool(getattr(props, 'debug_mode', False)),
+            'turn_off_collisions':    bool(getattr(props, 'turn_off_collisions', False)),
         }
         import json as _json
         props_b64 = base64.b64encode(_json.dumps(props_dict).encode('utf-8')).decode('ascii')

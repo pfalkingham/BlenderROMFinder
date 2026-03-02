@@ -177,7 +177,8 @@ class COLLISION_OT_calculate(Operator):
                         self._handle_completion(context)
                         self._cleanup_workers()
 
-                        if props.visualize_collisions and self._processor.valid_poses:
+                        should_animate = props.visualize_collisions or getattr(props, 'debug_mode', False)
+                        if should_animate and self._processor.valid_poses:
                             if self._processor.start_keyframe_creation(props):
                                 return {'PASS_THROUGH'}
 
@@ -221,7 +222,8 @@ class COLLISION_OT_calculate(Operator):
                 if not still_processing:
                     self._handle_completion(context)
 
-                    if props.visualize_collisions and self._processor.valid_poses:
+                    should_animate = props.visualize_collisions or getattr(props, 'debug_mode', False)
+                    if should_animate and self._processor.valid_poses:
                         if self._processor.start_keyframe_creation(props):
                             return {'PASS_THROUGH'}
 
@@ -329,6 +331,8 @@ class COLLISION_OT_calculate(Operator):
                         'proxy_decimate_ratio': float(props.proxy_decimate_ratio),
                         'penetration_sample_count': int(props.penetration_sample_count),
                         'only_export_valid_poses': bool(props.only_export_valid_poses),
+                        'debug_mode': bool(getattr(props, 'debug_mode', False)),
+                        'turn_off_collisions': bool(getattr(props, 'turn_off_collisions', False)),
                     }
                     props_json_b64 = __import__('base64').b64encode(
                         json.dumps(props_dict).encode('utf-8')).decode('ascii')
