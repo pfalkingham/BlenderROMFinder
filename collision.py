@@ -349,20 +349,40 @@ class CollisionDetector:
         np_matrix = np.array(dist_world_matrix)
         world_pts = (np_matrix @ self._np_sample_verts.T)[:3].T
 
-        ray_dir = self._PARITY_RAY_DIR
-        EPS = 1e-5
+        base_ray_dir = self._PARITY_RAY_DIR
+        EPS = 1e-4  # Increased epsilon for robustness
         MAX_CROSSINGS = 100
         inside_count = 0
 
-        for pt_xyz in world_pts:
+        # Pre-calculate a few diverse ray directions to avoid systematic edge cases
+        # We cycle through them to avoid all points hitting the same problem geometry
+        ray_dirs = [
+            base_ray_dir,
+            Vector((-1.0, 1e-5, 2e-5)).normalized(),
+            Vector((1e-5, 1.0, 1e-5)).normalized(),
+            Vector((1e-5, -1.0, 2e-5)).normalized(),
+            Vector((1e-5, 1e-5, 1.0)).normalized(),
+            Vector((2e-5, 1e-5, -1.0)).normalized(),
+        ]
+
+        for i, pt_xyz in enumerate(world_pts):
             origin = Vector((float(pt_xyz[0]), float(pt_xyz[1]), float(pt_xyz[2])))
+            
+            # Deterministically select a ray direction based on point index
+            # This ensures the same point always uses the same ray, preventing
+            # run-to-run variation while avoiding systematic alignment issues.
+            ray_dir = ray_dirs[i % len(ray_dirs)]
+            
             hit_count = 0
+            curr_origin = origin
+            
             while hit_count < MAX_CROSSINGS:
-                hit_loc, _, _, _ = self._prox_bvh.ray_cast(origin, ray_dir)
+                hit_loc, _, _, _ = self._prox_bvh.ray_cast(curr_origin, ray_dir)
                 if hit_loc is None:
                     break
                 hit_count += 1
-                origin = hit_loc + ray_dir * EPS
+                # Advance safely past the hit
+                curr_origin = hit_loc + ray_dir * EPS
 
             if hit_count % 2 == 1:  # odd crossings -> point is inside
                 inside_count += 1
