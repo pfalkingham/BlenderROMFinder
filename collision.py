@@ -63,8 +63,8 @@ class CollisionDetector:
 
         # Penetration-sample data
         self._np_sample_verts = None        # subsampled distal surface verts (Nx4)
-        self._penetration_sample_count = 10000
-        self._penetration_definite_threshold = 20  # min inside-samples to trust T2 early-out
+        self._penetration_sample_count = 5000
+        self._penetration_definite_threshold = 10  # min inside-samples to trust T2 early-out
 
         # Proxy mesh settings
         self._use_proxy = False
