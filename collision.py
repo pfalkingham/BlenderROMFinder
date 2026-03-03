@@ -324,8 +324,16 @@ class CollisionDetector:
     # Internal: penetration sampling (ray-parity / crossing-number)
     # ------------------------------------------------------------------
 
-    # Slightly off-axis to avoid hitting edges on axis-aligned meshes
-    _PARITY_RAY_DIR = Vector((1.0, 1e-5, 1e-5)).normalized()
+    # Diverse ray directions to avoid systematic edge-cases on axis-aligned meshes.
+    # Defined once as a class constant so they are not reconstructed per pose.
+    _PARITY_RAY_DIRS = [
+        Vector((1.0,  1e-5,  1e-5)).normalized(),
+        Vector((-1.0, 1e-5,  2e-5)).normalized(),
+        Vector((1e-5, 1.0,   1e-5)).normalized(),
+        Vector((1e-5, -1.0,  2e-5)).normalized(),
+        Vector((1e-5, 1e-5,  1.0)).normalized(),
+        Vector((2e-5, 1e-5, -1.0)).normalized(),
+    ]
 
     def _positive_penetration_check(self, dist_world_matrix):
         """Check how many sampled distal vertices are inside the proximal mesh.
@@ -349,21 +357,10 @@ class CollisionDetector:
         np_matrix = np.array(dist_world_matrix)
         world_pts = (np_matrix @ self._np_sample_verts.T)[:3].T
 
-        base_ray_dir = self._PARITY_RAY_DIR
+        ray_dirs = self._PARITY_RAY_DIRS
         EPS = 1e-4  # Increased epsilon for robustness
         MAX_CROSSINGS = 100
         inside_count = 0
-
-        # Pre-calculate a few diverse ray directions to avoid systematic edge cases
-        # We cycle through them to avoid all points hitting the same problem geometry
-        ray_dirs = [
-            base_ray_dir,
-            Vector((-1.0, 1e-5, 2e-5)).normalized(),
-            Vector((1e-5, 1.0, 1e-5)).normalized(),
-            Vector((1e-5, -1.0, 2e-5)).normalized(),
-            Vector((1e-5, 1e-5, 1.0)).normalized(),
-            Vector((2e-5, 1e-5, -1.0)).normalized(),
-        ]
 
         for i, pt_xyz in enumerate(world_pts):
             origin = Vector((float(pt_xyz[0]), float(pt_xyz[1]), float(pt_xyz[2])))

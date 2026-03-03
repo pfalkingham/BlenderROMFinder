@@ -186,22 +186,7 @@ def main():
             props.debug_mode = bool(props_dict.get('debug_mode', False))
             props.turn_off_collisions = bool(props_dict.get('turn_off_collisions', False))
 
-            # Ensure defaults for other optional props referenced in processing
-            # These mirror the defaults from the UI/PropertyGroup
-            if not hasattr(props, 'debug_mode'):
-                props.debug_mode = False
-            if not hasattr(props, 'turn_off_collisions'):
-                props.turn_off_collisions = False
-            if not hasattr(props, 'only_export_valid_poses'):
-                props.only_export_valid_poses = False
-            if not hasattr(props, 'penetration_sample_count'):
-                props.penetration_sample_count = 10000
-            if not hasattr(props, 'use_proxy_collision'):
-                props.use_proxy_collision = False
-            if not hasattr(props, 'proxy_decimate_ratio'):
-                props.proxy_decimate_ratio = 1.0
-            if not hasattr(props, 'use_convex_hull_optimization'):
-                props.use_convex_hull_optimization = False
+            # Defaults for optional props not always present in the serialised dict
             if not hasattr(props, 'batch_size'):
                 props.batch_size = 10
             if not hasattr(props, 'visualize_collisions'):

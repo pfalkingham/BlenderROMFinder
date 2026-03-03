@@ -74,16 +74,11 @@ class COLLISION_OT_calculate(Operator):
     def _tag_redraw(self, context):
         try:
             for win in context.window_manager.windows:
-                try:
-                    for area in win.screen.areas:
+                for area in win.screen.areas:
+                    if area.type == 'VIEW_3D':
                         area.tag_redraw()
-                except Exception:
-                    continue
         except Exception:
-            try:
-                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-            except Exception:
-                pass
+            pass
 
     # -- Modal -------------------------------------------------------------
 
