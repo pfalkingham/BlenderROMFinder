@@ -121,6 +121,8 @@ class ROMProcessor:
         self.is_cancelled = False
         self.start_time = None
         self.pose_iterator = None
+        self._iterator_pos = 0    # how many poses have been consumed from self.pose_iterator
+        self._skip_to = 0         # iterator must reach this position before main-process work begins
 
         # Object references
         self.prox_obj = None
@@ -238,6 +240,8 @@ class ROMProcessor:
             * len(self.trans_z_range)
         )
         self.pose_iterator = self._iter_pose_combinations()
+        self._iterator_pos = 0
+        self._skip_to = 0
 
         # CSV header + reset counters
         self.csv_data = [["rot_x", "rot_y", "rot_z", "trans_x", "trans_y", "trans_z", "Valid_pose"]]
@@ -321,18 +325,26 @@ class ROMProcessor:
         if self.is_cancelled or self.processed_poses >= self.total_poses:
             return False
 
-        # Skip poses already processed by headless workers
-        skip = getattr(self, '_skip_remaining', 0)
-        if skip > 0:
-            to_skip = min(skip, batch_size)
-            _ = list(islice(self.pose_iterator, to_skip))
-            self._skip_remaining -= to_skip
-            if self._skip_remaining >= 0 and to_skip == batch_size:
+        # Skip poses already processed by headless workers.
+        # _skip_to  : iterator must be at or past this index before we process.
+        # _iterator_pos : how many items have actually been consumed from pose_iterator.
+        # Using a target position (not a countdown) means late-arriving worker merges
+        # never cause us to skip poses the main process hasn't consumed yet.
+        skip_to = self._skip_to
+        to_skip = max(0, skip_to - self._iterator_pos)
+        if to_skip > 0:
+            chunk = min(to_skip, batch_size)
+            actual = len(list(islice(self.pose_iterator, chunk)))
+            self._iterator_pos += actual
+            if to_skip > chunk:
+                # Still more to skip — yield to Blender's event loop and come back
                 return True
+            # Finished skipping; fall through to process the next poses
 
         batch_poses = list(islice(self.pose_iterator, batch_size))
         if not batch_poses:
             return False
+        self._iterator_pos += len(batch_poses)
 
         batch_start = self.processed_poses
         batch_end = batch_start + len(batch_poses)
@@ -454,9 +466,16 @@ class ROMProcessor:
 
         prev = self.processed_poses
         self.processed_poses += len(csv_rows)
-        self._skip_remaining = getattr(self, '_skip_remaining', 0) + len(csv_rows)
+        # Advance the skip target to just past the highest pose index this worker covered.
+        # Deriving it from the actual indices (not chunk size) means it's correct regardless
+        # of how many main-process batches ran before this merge arrived.
+        if csv_rows:
+            worker_indices = [row[0] for row in csv_rows
+                              if len(row) >= 1 and isinstance(row[0], int)]
+            if worker_indices:
+                self._skip_to = max(self._skip_to, max(worker_indices) + 1)
         print(f"Merged worker payload: +{len(csv_rows)} csv rows, +{len(valids)} valids "
-              f"(processed {prev} -> {self.processed_poses})")
+              f"(processed {prev} -> {self.processed_poses}, skip_to={self._skip_to})")
 
     # ------------------------------------------------------------------
     # Lifecycle helpers
