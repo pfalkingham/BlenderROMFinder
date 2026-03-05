@@ -378,7 +378,6 @@ class ROMProcessor:
             if not collision:
                 self.valid_poses.append({
                     'pose_index': pose_index,
-                    'pose_params': (rx, ry, rz, tx, ty, tz),
                     'pose_matrix': pose_matrix.copy(),
                     'rx': rx, 'ry': ry, 'rz': rz,
                     'tx': tx, 'ty': ty, 'tz': tz,
@@ -402,6 +401,9 @@ class ROMProcessor:
         """Process [start_index, end_index] and return a result dict.
 
         Does NOT mutate class-level csv_data/valid_poses.
+
+        Uses direct mixed-radix index arithmetic to jump straight to
+        start_index without iterating through the preceding poses.
         """
         results_csv = []
         results_valids = []
@@ -409,20 +411,27 @@ class ROMProcessor:
         debug_all = (getattr(self.props, 'debug_mode', False)
                      and getattr(self.props, 'turn_off_collisions', False))
 
-        iter_all = product(
-            self.rot_x_range, self.rot_y_range, self.rot_z_range,
-            self.trans_x_range, self.trans_y_range, self.trans_z_range,
-        )
-        sliced = islice(iter_all, start_index, end_index + 1)
+        ranges = (self.rot_x_range, self.rot_y_range, self.rot_z_range,
+                  self.trans_x_range, self.trans_y_range, self.trans_z_range)
+        sizes = tuple(len(r) for r in ranges)
+        # Strides for mixed-radix decoding (last axis varies fastest, same as product)
+        strides = [1] * 6
+        for k in range(4, -1, -1):
+            strides[k] = strides[k + 1] * sizes[k + 1]
 
-        idx = start_index
-        for rx, ry, rz, tx, ty, tz in sliced:
+        for idx in range(start_index, end_index + 1):
             if self.is_cancelled:
                 break
 
+            rx = ranges[0][(idx // strides[0]) % sizes[0]]
+            ry = ranges[1][(idx // strides[1]) % sizes[1]]
+            rz = ranges[2][(idx // strides[2]) % sizes[2]]
+            tx = ranges[3][(idx // strides[3]) % sizes[3]]
+            ty = ranges[4][(idx // strides[4]) % sizes[4]]
+            tz = ranges[5][(idx // strides[5]) % sizes[5]]
+
             pose_matrix = self._compute_pose_matrix(rx, ry, rz, tx, ty, tz)
             if pose_matrix is None:
-                idx += 1
                 continue
 
             self._apply_pose(pose_matrix)
@@ -433,12 +442,10 @@ class ROMProcessor:
             if not collision:
                 results_valids.append({
                     "pose_index": idx,
-                    "pose_params": [rx, ry, rz, tx, ty, tz],
                     "pose_matrix": self._matrix_to_list(pose_matrix),
                     "rx": rx, "ry": ry, "rz": rz,
                     "tx": tx, "ty": ty, "tz": tz,
                 })
-            idx += 1
 
         return {"csv_rows": results_csv, "valids": results_valids}
 
@@ -458,7 +465,6 @@ class ROMProcessor:
             matrix = self._list_to_matrix(v.get('pose_matrix'))
             self.valid_poses.append({
                 'pose_index': v.get('pose_index'),
-                'pose_params': tuple(v.get('pose_params', [])),
                 'pose_matrix': matrix,
                 'rx': v.get('rx'), 'ry': v.get('ry'), 'rz': v.get('rz'),
                 'tx': v.get('tx'), 'ty': v.get('ty'), 'tz': v.get('tz'),
@@ -611,11 +617,8 @@ class ROMProcessor:
             if isinstance(matrix, list):
                 matrix = self._list_to_matrix(matrix)
 
-            if is_pose_bone:
-                self.keyframe_target.matrix = matrix
-            else:
-                self.keyframe_target.matrix_local = matrix
-
+            # Write custom properties so the RNA data paths exist on the object;
+            # values are read directly from pose_data below (no round-trip needed).
             self.keyframe_target["input_rot_x"] = pose_data['rx']
             self.keyframe_target["input_rot_y"] = pose_data['ry']
             self.keyframe_target["input_rot_z"] = pose_data['rz']
@@ -624,35 +627,51 @@ class ROMProcessor:
             self.keyframe_target["input_trans_z"] = pose_data['tz']
             self.keyframe_target["Valid pose"] = 1
 
-            bpy.context.view_layer.update()
-
             if is_pose_bone:
+                # PoseBone: bone-local location/rotation require a depsgraph
+                # update to be recomputed from the armature hierarchy.
+                self.keyframe_target.matrix = matrix
+                bpy.context.view_layer.update()
                 loc = self.keyframe_target.location
+                if rot_mode == 'QUATERNION':
+                    q = self.keyframe_target.rotation_quaternion
+                    self.collected_data['rotation_quaternion'][0].append(q.w)
+                    self.collected_data['rotation_quaternion'][1].append(q.x)
+                    self.collected_data['rotation_quaternion'][2].append(q.y)
+                    self.collected_data['rotation_quaternion'][3].append(q.z)
+                else:
+                    e = self.keyframe_target.rotation_euler
+                    self.collected_data['rotation_euler'][0].append(e.x)
+                    self.collected_data['rotation_euler'][1].append(e.y)
+                    self.collected_data['rotation_euler'][2].append(e.z)
             else:
-                loc = self.keyframe_target.location
+                # Object: matrix_local assignment decomposes immediately into
+                # location/rotation/scale — no depsgraph update required.
+                self.keyframe_target.matrix_local = matrix
+                loc = matrix.to_translation()
+                if rot_mode == 'QUATERNION':
+                    q = matrix.to_quaternion()
+                    self.collected_data['rotation_quaternion'][0].append(q.w)
+                    self.collected_data['rotation_quaternion'][1].append(q.x)
+                    self.collected_data['rotation_quaternion'][2].append(q.y)
+                    self.collected_data['rotation_quaternion'][3].append(q.z)
+                else:
+                    e = matrix.to_euler(rot_mode)
+                    self.collected_data['rotation_euler'][0].append(e.x)
+                    self.collected_data['rotation_euler'][1].append(e.y)
+                    self.collected_data['rotation_euler'][2].append(e.z)
 
             self.collected_data["location"][0].append(loc.x)
             self.collected_data["location"][1].append(loc.y)
             self.collected_data["location"][2].append(loc.z)
 
-            if rot_mode == 'QUATERNION':
-                q = self.keyframe_target.rotation_quaternion
-                self.collected_data['rotation_quaternion'][0].append(q.w)
-                self.collected_data['rotation_quaternion'][1].append(q.x)
-                self.collected_data['rotation_quaternion'][2].append(q.y)
-                self.collected_data['rotation_quaternion'][3].append(q.z)
-            else:
-                e = self.keyframe_target.rotation_euler
-                self.collected_data['rotation_euler'][0].append(e.x)
-                self.collected_data['rotation_euler'][1].append(e.y)
-                self.collected_data['rotation_euler'][2].append(e.z)
-
-            self.collected_data['["input_rot_x"]'][0].append(self.keyframe_target.get('input_rot_x'))
-            self.collected_data['["input_rot_y"]'][0].append(self.keyframe_target.get('input_rot_y'))
-            self.collected_data['["input_rot_z"]'][0].append(self.keyframe_target.get('input_rot_z'))
-            self.collected_data['["input_trans_x"]'][0].append(self.keyframe_target.get('input_trans_x'))
-            self.collected_data['["input_trans_y"]'][0].append(self.keyframe_target.get('input_trans_y'))
-            self.collected_data['["input_trans_z"]'][0].append(self.keyframe_target.get('input_trans_z'))
+            # Custom prop values taken directly from pose_data — no round-trip read needed.
+            self.collected_data['["input_rot_x"]'][0].append(pose_data['rx'])
+            self.collected_data['["input_rot_y"]'][0].append(pose_data['ry'])
+            self.collected_data['["input_rot_z"]'][0].append(pose_data['rz'])
+            self.collected_data['["input_trans_x"]'][0].append(pose_data['tx'])
+            self.collected_data['["input_trans_y"]'][0].append(pose_data['ty'])
+            self.collected_data['["input_trans_z"]'][0].append(pose_data['tz'])
 
         self.keyframe_batch_index += 1
         return True
@@ -756,10 +775,8 @@ class ROMProcessor:
                 header = self.csv_data[0]
                 rows = self.csv_data[1:]
 
-                indexed = [r for r in rows if len(r) >= 8 and isinstance(r[0], int)]
-                nonindexed = [r for r in rows if not (len(r) >= 8 and isinstance(r[0], int))]
-                indexed_sorted = sorted(indexed, key=lambda r: r[0]) if indexed else []
-                rows_to_write = [r[1:] for r in indexed_sorted] + nonindexed
+                # All rows carry a pose-index as first element; sort and strip it.
+                rows_to_write = [r[1:] for r in sorted(rows, key=lambda r: r[0])]
 
                 with open(filepath, 'w', newline='') as csvfile:
                     writer = csv.writer(csvfile)

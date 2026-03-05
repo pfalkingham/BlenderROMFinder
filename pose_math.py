@@ -89,11 +89,16 @@ def _add_world_delta_to_local(base_pose_local_matrix, world_delta, acsm_obj):
 # Per-mode pose calculators
 # ---------------------------------------------------------------------------
 
-def calculate_pose_for_isb_standard_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz,
-                                          props, acsm_initial_local_matrix,
-                                          acsm_obj=None, acsf_obj=None):
+def _calculate_pose_with_acsm_translations(rz_deg, ry_deg, rx_deg, tx, ty, tz,
+                                            acsm_initial_local_matrix, acsm_obj,
+                                            adab_mode_is_isb_standard):
+    """Shared implementation for ISB Standard and Simplified (Intuitive) modes.
+
+    Both modes compute rotations identically except for the Ad/Ab axis convention,
+    and apply translations along the final ACSm world-space axes.
+    """
     jcs_orientation_matrix = calculate_jcs_orientation_matrix_local_to_acsf(
-        rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=True)
+        rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=adab_mode_is_isb_standard)
 
     base_pose_with_jcs = acsm_initial_local_matrix @ jcs_orientation_matrix
 
@@ -108,37 +113,27 @@ def calculate_pose_for_isb_standard_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz,
             world_delta = (axis_x_world * tx) + (axis_y_world * ty) + (axis_z_world * tz)
         else:
             world_delta = base_pose_with_jcs.to_3x3() @ Vector((tx, ty, tz))
-
-        final_matrix = _add_world_delta_to_local(base_pose_with_jcs, world_delta, acsm_obj)
+        return _add_world_delta_to_local(base_pose_with_jcs, world_delta, acsm_obj)
     else:
-        final_matrix = base_pose_with_jcs
-    return final_matrix
+        return base_pose_with_jcs
+
+
+def calculate_pose_for_isb_standard_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz,
+                                          props, acsm_initial_local_matrix,
+                                          acsm_obj=None, acsf_obj=None):
+    return _calculate_pose_with_acsm_translations(
+        rz_deg, ry_deg, rx_deg, tx, ty, tz,
+        acsm_initial_local_matrix, acsm_obj,
+        adab_mode_is_isb_standard=True)
 
 
 def calculate_pose_for_intuitive_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz,
                                        props, acsm_initial_local_matrix,
                                        acsm_obj=None, acsf_obj=None):
-    jcs_orientation_matrix = calculate_jcs_orientation_matrix_local_to_acsf(
-        rz_deg, ry_deg, rx_deg, adab_mode_is_isb_standard=False)
-
-    base_pose_with_jcs = acsm_initial_local_matrix @ jcs_orientation_matrix
-
-    if tx != 0 or ty != 0 or tz != 0:
-        if acsm_obj is not None:
-            parent_world = acsm_obj.parent.matrix_world if acsm_obj.parent else Matrix.Identity(4)
-            acsm_world = parent_world @ base_pose_with_jcs
-            q = acsm_world.to_quaternion()
-            axis_x_world = q @ Vector((1, 0, 0))
-            axis_y_world = q @ Vector((0, 1, 0))
-            axis_z_world = q @ Vector((0, 0, 1))
-            world_delta = (axis_x_world * tx) + (axis_y_world * ty) + (axis_z_world * tz)
-        else:
-            world_delta = base_pose_with_jcs.to_3x3() @ Vector((tx, ty, tz))
-
-        final_matrix = _add_world_delta_to_local(base_pose_with_jcs, world_delta, acsm_obj)
-    else:
-        final_matrix = base_pose_with_jcs
-    return final_matrix
+    return _calculate_pose_with_acsm_translations(
+        rz_deg, ry_deg, rx_deg, tx, ty, tz,
+        acsm_initial_local_matrix, acsm_obj,
+        adab_mode_is_isb_standard=False)
 
 
 def calculate_pose_for_mg_hinge_mode(rx_deg, ry_deg, rz_deg, tx, ty, tz,

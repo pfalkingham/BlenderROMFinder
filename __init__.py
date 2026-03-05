@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Range of Motion Finder",
-    "author": "Peter Falkingham, Andréas Jannel, Ben Griffin (Liverpool John Moores University), and gratuitous AI/LLMs, especially Google AI Studio",
+    "author": "Peter Falkingham (Liverpool John Moores University), with help and testing from Andréas Jannel, Ben Griffin, Rebecca Lowes (LJMU), and gratuitous AI/LLMs",
     "version": (5, 0, 5),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > ROM",
