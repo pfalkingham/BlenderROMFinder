@@ -129,11 +129,23 @@ class COLLISION_OT_calculate(Operator):
 
                         p = w['proc']
                         rc = p.poll()
-                        if rc is None and not w.get('done'):
-                            any_active = True
-                        elif rc is not None and rc != 0 and not w.get('done'):
-                            print(f"Worker {w['worker_id']} exited with code {rc}")
-                            w['done'] = True
+                        t = w.get('thread')
+                        if not w.get('done'):
+                            if rc is None:
+                                any_active = True  # process still running
+                            elif rc == 0:
+                                # Process exited cleanly — wait for reader thread
+                                # to finish delivering its result before declaring done.
+                                if t is not None and t.is_alive():
+                                    any_active = True
+                                    if props.debug_mode:
+                                        print(f"[Worker {w['worker_id']}] process done, "
+                                              f"waiting for reader thread to deliver result")
+                                # else: thread finished without emitting ROMF_RESULT — give up
+                            else:
+                                # Non-zero exit: process failed
+                                print(f"Worker {w['worker_id']} exited with code {rc}")
+                                w['done'] = True
 
                         total_processed += w.get('last_progress', 0)
                         total_total += w.get('total', 0)
@@ -233,6 +245,17 @@ class COLLISION_OT_calculate(Operator):
         """Export CSV and report summary."""
         props = context.scene.collision_props
         try:
+            # Sanity-check: every pose should appear in the CSV.
+            # csv_data[0] is the header row; the rest are pose rows.
+            expected = self._processor.total_poses
+            actual_rows = max(0, len(self._processor.csv_data) - 1)
+            if actual_rows < expected:
+                missing = expected - actual_rows
+                msg = (f"WARNING: only {actual_rows:,} of {expected:,} poses were written to the CSV "
+                       f"({missing:,} missing). A worker result may have been lost.")
+                print(msg)
+                self.report({'WARNING'}, msg)
+
             if self._processor.export_results(props):
                 elapsed = time.time() - self._processor.start_time
                 mins, secs = divmod(int(elapsed), 60)
