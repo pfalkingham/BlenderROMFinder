@@ -282,6 +282,23 @@ class ROMProcessor:
             return self.acsm_obj.pose.bones.get(acsm_bone_name)
         return self.acsm_obj
 
+    def _insert_initial_keyframe(self, target):
+        """Insert the initial keyframe on the target using its active rotation mode."""
+        target.keyframe_insert(data_path="location", frame=0)
+        if getattr(target, "rotation_mode", None) == 'QUATERNION':
+            target.keyframe_insert(data_path="rotation_quaternion", frame=0)
+        else:
+            target.keyframe_insert(data_path="rotation_euler", frame=0)
+
+    def _read_target_channels(self, target, rot_mode):
+        """Read the evaluated channels from the active target after pose application."""
+        loc = target.location
+        if rot_mode == 'QUATERNION':
+            rot = target.rotation_quaternion
+            return loc, (rot.w, rot.x, rot.y, rot.z)
+        rot = target.rotation_euler
+        return loc, (rot.x, rot.y, rot.z)
+
     # ------------------------------------------------------------------
     # Pose computation helper (shared by process_batch & process_pose_range)
     # ------------------------------------------------------------------
@@ -564,8 +581,7 @@ class ROMProcessor:
         scene.tool_settings.use_keyframe_insert_auto = False
 
         self.reset_acsm_to_initial()
-        self.keyframe_target.keyframe_insert(data_path="location", frame=0)
-        self.keyframe_target.keyframe_insert(data_path="rotation_euler", frame=0)
+        self._insert_initial_keyframe(self.keyframe_target)
 
         props.calculation_progress = 0.0
         props.time_remaining = "Creating animation keyframes..."
@@ -628,38 +644,27 @@ class ROMProcessor:
             self.keyframe_target["Valid pose"] = 1
 
             if is_pose_bone:
-                # PoseBone: bone-local location/rotation require a depsgraph
-                # update to be recomputed from the armature hierarchy.
+                # PoseBone: bone-local channels must be read from the evaluated
+                # armature hierarchy after the matrix is applied.
                 self.keyframe_target.matrix = matrix
-                bpy.context.view_layer.update()
-                loc = self.keyframe_target.location
-                if rot_mode == 'QUATERNION':
-                    q = self.keyframe_target.rotation_quaternion
-                    self.collected_data['rotation_quaternion'][0].append(q.w)
-                    self.collected_data['rotation_quaternion'][1].append(q.x)
-                    self.collected_data['rotation_quaternion'][2].append(q.y)
-                    self.collected_data['rotation_quaternion'][3].append(q.z)
-                else:
-                    e = self.keyframe_target.rotation_euler
-                    self.collected_data['rotation_euler'][0].append(e.x)
-                    self.collected_data['rotation_euler'][1].append(e.y)
-                    self.collected_data['rotation_euler'][2].append(e.z)
             else:
-                # Object: matrix_local assignment decomposes immediately into
-                # location/rotation/scale — no depsgraph update required.
+                # Object: keep the same evaluated readback path so the baked
+                # channels match the solved matrix instead of a direct matrix
+                # decomposition.
                 self.keyframe_target.matrix_local = matrix
-                loc = matrix.to_translation()
-                if rot_mode == 'QUATERNION':
-                    q = matrix.to_quaternion()
-                    self.collected_data['rotation_quaternion'][0].append(q.w)
-                    self.collected_data['rotation_quaternion'][1].append(q.x)
-                    self.collected_data['rotation_quaternion'][2].append(q.y)
-                    self.collected_data['rotation_quaternion'][3].append(q.z)
-                else:
-                    e = matrix.to_euler(rot_mode)
-                    self.collected_data['rotation_euler'][0].append(e.x)
-                    self.collected_data['rotation_euler'][1].append(e.y)
-                    self.collected_data['rotation_euler'][2].append(e.z)
+
+            bpy.context.view_layer.update()
+            loc, rot = self._read_target_channels(self.keyframe_target, rot_mode)
+
+            if rot_mode == 'QUATERNION':
+                self.collected_data['rotation_quaternion'][0].append(rot[0])
+                self.collected_data['rotation_quaternion'][1].append(rot[1])
+                self.collected_data['rotation_quaternion'][2].append(rot[2])
+                self.collected_data['rotation_quaternion'][3].append(rot[3])
+            else:
+                self.collected_data['rotation_euler'][0].append(rot[0])
+                self.collected_data['rotation_euler'][1].append(rot[1])
+                self.collected_data['rotation_euler'][2].append(rot[2])
 
             self.collected_data["location"][0].append(loc.x)
             self.collected_data["location"][1].append(loc.y)
@@ -749,8 +754,7 @@ class ROMProcessor:
             bpy.context.scene.tool_settings.use_keyframe_insert_auto = self.original_use_keyframe_insert_auto
 
         self.reset_acsm_to_initial()
-        self.keyframe_target.keyframe_insert(data_path="location", frame=0)
-        self.keyframe_target.keyframe_insert(data_path="rotation_euler", frame=0)
+        self._insert_initial_keyframe(self.keyframe_target)
 
         self.is_creating_keyframes = False
         props.calculation_progress = 100.0
