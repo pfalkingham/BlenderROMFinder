@@ -182,6 +182,7 @@ def main():
             props.use_proxy_collision = props_dict.get('use_proxy_collision')
             props.proxy_decimate_ratio = props_dict.get('proxy_decimate_ratio')
             props.only_export_valid_poses = props_dict.get('only_export_valid_poses')
+            props.headless_workers_emit_channels = bool(props_dict.get('headless_workers_emit_channels', True))
             # Debug flags — explicitly read from dict so workers honour them
             props.debug_mode = bool(props_dict.get('debug_mode', False))
             props.turn_off_collisions = bool(props_dict.get('turn_off_collisions', False))

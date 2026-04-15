@@ -349,6 +349,7 @@ class COLLISION_OT_calculate(Operator):
                         'proxy_decimate_ratio': float(props.proxy_decimate_ratio),
                         'penetration_sample_count': int(props.penetration_sample_count),
                         'only_export_valid_poses': bool(props.only_export_valid_poses),
+                        'headless_workers_emit_channels': bool(getattr(props, 'headless_workers_emit_channels', True)),
                         'debug_mode': bool(getattr(props, 'debug_mode', False)),
                         'turn_off_collisions': bool(getattr(props, 'turn_off_collisions', False)),
                     }

@@ -423,6 +423,12 @@ class CollisionProperties(PropertyGroup):
         description="When off, will fallback to single process if workers fail; when on, the calculation will abort if any worker fails",
         default=True
     )
+
+    headless_workers_emit_channels: BoolProperty(
+        name="Workers Emit Channels",
+        description="Have headless workers emit evaluated ACSm animation channels for valid poses to speed keyframe generation while preserving visual correctness",
+        default=True
+    )
     
     export_to_csv: BoolProperty(
         name="Export to CSV",

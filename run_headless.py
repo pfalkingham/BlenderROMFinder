@@ -302,6 +302,7 @@ def main():
             'use_proxy_collision':    bool(props.use_proxy_collision),
             'proxy_decimate_ratio':   float(props.proxy_decimate_ratio),
             'only_export_valid_poses': bool(props.only_export_valid_poses),
+            'headless_workers_emit_channels': bool(getattr(props, 'headless_workers_emit_channels', True)),
             'debug_mode':             bool(getattr(props, 'debug_mode', False)),
             'turn_off_collisions':    bool(getattr(props, 'turn_off_collisions', False)),
         }

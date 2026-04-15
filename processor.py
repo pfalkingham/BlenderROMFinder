@@ -424,6 +424,9 @@ class ROMProcessor:
         """
         results_csv = []
         results_valids = []
+        emit_channels = bool(getattr(self.props, 'headless_workers_emit_channels', False))
+        keyframe_target = self._get_keyframe_target(self.props) if emit_channels else None
+        target_rot_mode = getattr(keyframe_target, 'rotation_mode', 'XYZ') if keyframe_target else 'XYZ'
 
         debug_all = (getattr(self.props, 'debug_mode', False)
                      and getattr(self.props, 'turn_off_collisions', False))
@@ -457,12 +460,30 @@ class ROMProcessor:
             results_csv.append([idx, rx, ry, rz, tx, ty, tz, 0 if collision else 1])
 
             if not collision:
-                results_valids.append({
+                valid_row = {
                     "pose_index": idx,
-                    "pose_matrix": self._matrix_to_list(pose_matrix),
                     "rx": rx, "ry": ry, "rz": rz,
                     "tx": tx, "ty": ty, "tz": tz,
-                })
+                }
+
+                if emit_channels and keyframe_target is not None:
+                    loc, rot = self._read_target_channels(keyframe_target, target_rot_mode)
+                    channels = {
+                        "location": [float(loc.x), float(loc.y), float(loc.z)],
+                    }
+                    if target_rot_mode == 'QUATERNION':
+                        channels["rotation_quaternion"] = [
+                            float(rot[0]), float(rot[1]), float(rot[2]), float(rot[3])
+                        ]
+                    else:
+                        channels["rotation_euler"] = [
+                            float(rot[0]), float(rot[1]), float(rot[2])
+                        ]
+                    valid_row["channels"] = channels
+                else:
+                    valid_row["pose_matrix"] = self._matrix_to_list(pose_matrix)
+
+                results_valids.append(valid_row)
 
         return {"csv_rows": results_csv, "valids": results_valids}
 
@@ -479,10 +500,12 @@ class ROMProcessor:
                 self.csv_data.append(row)
 
         for v in valids:
-            matrix = self._list_to_matrix(v.get('pose_matrix'))
+            pose_matrix_data = v.get('pose_matrix')
+            matrix = self._list_to_matrix(pose_matrix_data) if pose_matrix_data else None
             self.valid_poses.append({
                 'pose_index': v.get('pose_index'),
                 'pose_matrix': matrix,
+                'channels': v.get('channels'),
                 'rx': v.get('rx'), 'ry': v.get('ry'), 'rz': v.get('rz'),
                 'tx': v.get('tx'), 'ty': v.get('ty'), 'tz': v.get('tz'),
             })
@@ -629,10 +652,6 @@ class ROMProcessor:
             frame = batch_start + i + 1
             self.frames.append(frame)
 
-            matrix = pose_data['pose_matrix']
-            if isinstance(matrix, list):
-                matrix = self._list_to_matrix(matrix)
-
             # Write custom properties so the RNA data paths exist on the object;
             # values are read directly from pose_data below (no round-trip needed).
             self.keyframe_target["input_rot_x"] = pose_data['rx']
@@ -643,32 +662,64 @@ class ROMProcessor:
             self.keyframe_target["input_trans_z"] = pose_data['tz']
             self.keyframe_target["Valid pose"] = 1
 
-            if is_pose_bone:
-                # PoseBone: bone-local channels must be read from the evaluated
-                # armature hierarchy after the matrix is applied.
-                self.keyframe_target.matrix = matrix
-            else:
-                # Object: keep the same evaluated readback path so the baked
-                # channels match the solved matrix instead of a direct matrix
-                # decomposition.
-                self.keyframe_target.matrix_local = matrix
+            channels = pose_data.get('channels')
+            used_emitted_channels = False
 
-            bpy.context.view_layer.update()
-            loc, rot = self._read_target_channels(self.keyframe_target, rot_mode)
+            if channels:
+                loc_vals = channels.get('location')
+                if loc_vals and len(loc_vals) == 3:
+                    if rot_mode == 'QUATERNION':
+                        q_vals = channels.get('rotation_quaternion')
+                        if q_vals and len(q_vals) == 4:
+                            loc_x, loc_y, loc_z = float(loc_vals[0]), float(loc_vals[1]), float(loc_vals[2])
+                            self.collected_data['rotation_quaternion'][0].append(float(q_vals[0]))
+                            self.collected_data['rotation_quaternion'][1].append(float(q_vals[1]))
+                            self.collected_data['rotation_quaternion'][2].append(float(q_vals[2]))
+                            self.collected_data['rotation_quaternion'][3].append(float(q_vals[3]))
+                            used_emitted_channels = True
+                    else:
+                        e_vals = channels.get('rotation_euler')
+                        if e_vals and len(e_vals) == 3:
+                            loc_x, loc_y, loc_z = float(loc_vals[0]), float(loc_vals[1]), float(loc_vals[2])
+                            self.collected_data['rotation_euler'][0].append(float(e_vals[0]))
+                            self.collected_data['rotation_euler'][1].append(float(e_vals[1]))
+                            self.collected_data['rotation_euler'][2].append(float(e_vals[2]))
+                            used_emitted_channels = True
 
-            if rot_mode == 'QUATERNION':
-                self.collected_data['rotation_quaternion'][0].append(rot[0])
-                self.collected_data['rotation_quaternion'][1].append(rot[1])
-                self.collected_data['rotation_quaternion'][2].append(rot[2])
-                self.collected_data['rotation_quaternion'][3].append(rot[3])
-            else:
-                self.collected_data['rotation_euler'][0].append(rot[0])
-                self.collected_data['rotation_euler'][1].append(rot[1])
-                self.collected_data['rotation_euler'][2].append(rot[2])
+            if not used_emitted_channels:
+                matrix = pose_data.get('pose_matrix')
+                if isinstance(matrix, list):
+                    matrix = self._list_to_matrix(matrix)
+                if matrix is None:
+                    continue
 
-            self.collected_data["location"][0].append(loc.x)
-            self.collected_data["location"][1].append(loc.y)
-            self.collected_data["location"][2].append(loc.z)
+                if is_pose_bone:
+                    # PoseBone: bone-local channels must be read from the evaluated
+                    # armature hierarchy after the matrix is applied.
+                    self.keyframe_target.matrix = matrix
+                else:
+                    # Object: keep the same evaluated readback path so the baked
+                    # channels match the solved matrix instead of a direct matrix
+                    # decomposition.
+                    self.keyframe_target.matrix_local = matrix
+
+                bpy.context.view_layer.update()
+                loc, rot = self._read_target_channels(self.keyframe_target, rot_mode)
+                loc_x, loc_y, loc_z = float(loc.x), float(loc.y), float(loc.z)
+
+                if rot_mode == 'QUATERNION':
+                    self.collected_data['rotation_quaternion'][0].append(float(rot[0]))
+                    self.collected_data['rotation_quaternion'][1].append(float(rot[1]))
+                    self.collected_data['rotation_quaternion'][2].append(float(rot[2]))
+                    self.collected_data['rotation_quaternion'][3].append(float(rot[3]))
+                else:
+                    self.collected_data['rotation_euler'][0].append(float(rot[0]))
+                    self.collected_data['rotation_euler'][1].append(float(rot[1]))
+                    self.collected_data['rotation_euler'][2].append(float(rot[2]))
+
+            self.collected_data["location"][0].append(loc_x)
+            self.collected_data["location"][1].append(loc_y)
+            self.collected_data["location"][2].append(loc_z)
 
             # Custom prop values taken directly from pose_data — no round-trip read needed.
             self.collected_data['["input_rot_x"]'][0].append(pose_data['rx'])

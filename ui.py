@@ -216,6 +216,7 @@ class COLLISION_PT_panel(Panel):
         row.label(text="Headless Workers:")
         row.prop(props, "headless_worker_count", text="Workers")
         box.prop(props, "headless_chunk_size")
+        box.prop(props, "headless_workers_emit_channels")
         box.prop(props, "headless_workers_only", text="Workers-only mode")
         if props.headless_workers_only:
             row = box.row()
